@@ -84,11 +84,23 @@ static char s_pair_label[32] = {0};
 static int64_t s_pair_deadline_ms = 0;
 static uint16_t s_pair_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 
-// Minimal GATT service (encrypted read characteristic) to guarantee iOS/Android SMP bonding & IRK exchange
+// Standard HID Service (0x1812) with encrypted read characteristic:
+// Required so iOS Settings -> Bluetooth lists the device and triggers SMP bonding + IRK exchange.
+static const ble_uuid16_t s_hid_svc_uuid = BLE_UUID16_INIT(0x1812);
+static const ble_uuid16_t s_hid_info_chr_uuid = BLE_UUID16_INIT(0x2A4A);
 static const ble_uuid128_t s_svc_uuid =
     BLE_UUID128_INIT(0x9b, 0x32, 0x7a, 0x10, 0x55, 0x01, 0x4b, 0x99, 0xa2, 0x11, 0x45, 0x53, 0x50, 0x33, 0x32, 0x00);
 static const ble_uuid128_t s_chr_uuid =
     BLE_UUID128_INIT(0x9b, 0x32, 0x7a, 0x10, 0x55, 0x01, 0x4b, 0x99, 0xa2, 0x11, 0x45, 0x53, 0x50, 0x33, 0x32, 0x01);
+
+static int gatt_hid_info_access(uint16_t conn_handle, uint16_t attr_handle,
+                                struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    // bcdHID=0x0111, bCountryCode=0x00, Flags=0x02 (NormallyConnectable)
+    static const uint8_t hid_info[4] = {0x11, 0x01, 0x00, 0x02};
+    int rc = os_mbuf_append(ctxt->om, hid_info, sizeof(hid_info));
+    return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+}
 
 static int gatt_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                            struct ble_gatt_access_ctxt *ctxt, void *arg)
@@ -99,6 +111,18 @@ static int gatt_chr_access(uint16_t conn_handle, uint16_t attr_handle,
 }
 
 static const struct ble_gatt_svc_def s_gatt_svcs[] = {
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = &s_hid_svc_uuid.u,
+        .characteristics = (struct ble_gatt_chr_def[]) {
+            {
+                .uuid = &s_hid_info_chr_uuid.u,
+                .access_cb = gatt_hid_info_access,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC,
+            },
+            { 0 }
+        },
+    },
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
         .uuid = &s_svc_uuid.u,
@@ -212,18 +236,22 @@ static bool rpa_matches_irk(const uint8_t rpa_le[6], const uint8_t irk_le[16])
 
 static uint8_t match_tracked_device_locked(const ble_addr_t *addr, int64_t ts_ms)
 {
-    cfg_device_t devs[CFG_MAX_DEVICES];
+    static cfg_device_t devs[CFG_MAX_DEVICES];
     size_t dev_cnt = cfg_devices_list(devs, CFG_MAX_DEVICES);
     if (dev_cnt == 0) return 0;
 
-    // 1. Direct MAC match (fixed MAC or public/static identity)
+    // 1. Direct MAC match:
+    //    - MATCH_FIXED_MAC: fixed public/static MAC
+    //    - MATCH_IRK: also match when NimBLE's hardware controller resolving list
+    //      already resolved the peer's RPA into its identity address (PUBLIC_ID / RANDOM_ID)
     for (size_t i = 0; i < dev_cnt; i++) {
-        if (devs[i].match_type == MATCH_FIXED_MAC && memcmp(devs[i].mac, addr->val, 6) == 0) {
+        if ((devs[i].match_type == MATCH_FIXED_MAC || devs[i].match_type == MATCH_IRK) &&
+            memcmp(devs[i].mac, addr->val, 6) == 0) {
             return devs[i].id;
         }
     }
 
-    // 2. RPA match against stored IRKs
+    // 2. Software RPA match against stored IRKs (fallback when not resolved by controller)
     bool is_rpa = (addr->type == BLE_ADDR_RANDOM && (addr->val[5] & 0xC0) == 0x40);
     if (!is_rpa) return 0;
 
@@ -445,8 +473,12 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             struct ble_gap_adv_params adv_params = {
                 .conn_mode = BLE_GAP_CONN_MODE_UND,
                 .disc_mode = BLE_GAP_DISC_MODE_GEN,
+                .itvl_min = 32,
+                .itvl_max = 64,
             };
             ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &adv_params, gap_event_cb, NULL);
+        } else {
+            start_scan_if_allowed();
         }
         xSemaphoreGive(s_mutex);
         break;
@@ -555,7 +587,7 @@ static void presence_eval_task(void *arg)
             finish_pairing_locked("timeout", 0, "配对超时，请重试");
         }
 
-        cfg_device_t devs[CFG_MAX_DEVICES];
+        static cfg_device_t devs[CFG_MAX_DEVICES];
         size_t dev_cnt = cfg_devices_list(devs, CFG_MAX_DEVICES);
 
         // Evaluate per-device hysteresis state machine
@@ -593,7 +625,7 @@ static void presence_eval_task(void *arg)
         }
 
         // Aggregate per-person state & emit events
-        cfg_person_t persons[CFG_MAX_PERSONS];
+        static cfg_person_t persons[CFG_MAX_PERSONS];
         size_t person_cnt = cfg_persons_list(persons, CFG_MAX_PERSONS);
         int home_persons = 0;
 
@@ -681,6 +713,7 @@ esp_err_t ble_presence_init(void)
     ble_svc_gap_init();
     ble_svc_gatt_init();
     ble_svc_gap_device_name_set("SSP32S3-Pair");
+    ble_svc_gap_device_appearance_set(0x03C0);
 
     ble_gatts_count_cfg(s_gatt_svcs);
     ble_gatts_add_svcs(s_gatt_svcs);
@@ -688,7 +721,7 @@ esp_err_t ble_presence_init(void)
     ble_store_config_init();
     nimble_port_freertos_init(nimble_host_task);
 
-    xTaskCreate(presence_eval_task, "ble_eval", 4096, NULL, 4, NULL);
+    xTaskCreate(presence_eval_task, "ble_eval", 6144, NULL, 4, NULL);
     ESP_LOGI(TAG, "BLE presence subsystem initialized");
     return ESP_OK;
 }
@@ -736,15 +769,19 @@ esp_err_t ble_presence_start_pairing(uint8_t person_id, const char *label, uint1
 
     struct ble_hs_adv_fields fields = {0};
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    fields.uuids16 = (ble_uuid16_t *)&s_hid_svc_uuid;
+    fields.num_uuids16 = 1;
+    fields.uuids16_is_complete = 1;
     const char *name = "SSP32S3-Pair";
     fields.name = (uint8_t *)name;
     fields.name_len = strlen(name);
     fields.name_is_complete = 1;
-    fields.appearance = 0x0080; // Generic Computer
+    fields.appearance = 0x03C0; // Generic HID (required for iOS Settings -> Bluetooth discovery)
     fields.appearance_is_present = 1;
 
     int rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
+        ESP_LOGW(TAG, "ble_gap_adv_set_fields failed: %d", rc);
         s_pairing_active = false;
         start_scan_if_allowed();
         xSemaphoreGive(s_mutex);
@@ -754,6 +791,8 @@ esp_err_t ble_presence_start_pairing(uint8_t person_id, const char *label, uint1
     struct ble_gap_adv_params adv_params = {
         .conn_mode = BLE_GAP_CONN_MODE_UND,
         .disc_mode = BLE_GAP_DISC_MODE_GEN,
+        .itvl_min = 32,  // 20ms
+        .itvl_max = 64,  // 40ms
     };
     rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &adv_params, gap_event_cb, NULL);
     if (rc != 0) {
@@ -800,7 +839,8 @@ void ble_presence_on_device_deleted(uint8_t device_id)
 
 void ble_presence_on_person_deleted(uint8_t person_id)
 {
-    cfg_device_t devs[CFG_MAX_DEVICES];
+    cfg_device_t *devs = calloc(CFG_MAX_DEVICES, sizeof(cfg_device_t));
+    if (!devs) return;
     size_t cnt = cfg_devices_list(devs, CFG_MAX_DEVICES);
     for (size_t i = 0; i < cnt; i++) {
         if (devs[i].person_id == person_id && devs[i].match_type == MATCH_IRK) {
@@ -827,6 +867,7 @@ void ble_presence_on_person_deleted(uint8_t person_id)
     }
     memset(s_rpa_cache, 0, sizeof(s_rpa_cache));
     xSemaphoreGive(s_mutex);
+    free(devs);
 }
 
 void ble_presence_reload_config(void)
@@ -843,6 +884,14 @@ void ble_presence_get_summary(ble_summary_t *out)
     memset(out, 0, sizeof(*out));
     if (!s_mutex) return;
 
+    cfg_device_t *devs = calloc(CFG_MAX_DEVICES, sizeof(cfg_device_t));
+    cfg_person_t *persons = calloc(CFG_MAX_PERSONS, sizeof(cfg_person_t));
+    if (!devs || !persons) {
+        free(devs);
+        free(persons);
+        return;
+    }
+
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     if (s_pairing_active) {
         out->state = BLE_RUN_PAIRING;
@@ -856,10 +905,8 @@ void ble_presence_get_summary(ble_summary_t *out)
         out->state = BLE_RUN_IDLE;
     }
 
-    cfg_device_t devs[CFG_MAX_DEVICES];
     out->tracked_devices = cfg_devices_list(devs, CFG_MAX_DEVICES);
 
-    cfg_person_t persons[CFG_MAX_PERSONS];
     size_t p_cnt = cfg_persons_list(persons, CFG_MAX_PERSONS);
     size_t home = 0;
     for (size_t i = 0; i < p_cnt; i++) {
@@ -868,6 +915,9 @@ void ble_presence_get_summary(ble_summary_t *out)
     }
     out->home_persons = home;
     xSemaphoreGive(s_mutex);
+
+    free(devs);
+    free(persons);
 }
 
 static int cmp_nearby_rssi_desc(const void *a, const void *b)
@@ -903,7 +953,8 @@ size_t ble_presence_get_nearby(ble_nearby_dev_t *out, size_t max_count)
 size_t ble_presence_get_persons_runtime(ble_person_runtime_t *out, size_t max_count)
 {
     if (!out || max_count == 0) return 0;
-    cfg_person_t persons[CFG_MAX_PERSONS];
+    cfg_person_t *persons = calloc(CFG_MAX_PERSONS, sizeof(cfg_person_t));
+    if (!persons) return 0;
     size_t cnt = cfg_persons_list(persons, max_count < CFG_MAX_PERSONS ? max_count : CFG_MAX_PERSONS);
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
@@ -914,13 +965,15 @@ size_t ble_presence_get_persons_runtime(ble_person_runtime_t *out, size_t max_co
         out[i].is_home = prt ? prt->is_home : false;
     }
     xSemaphoreGive(s_mutex);
+    free(persons);
     return cnt;
 }
 
 size_t ble_presence_get_devices_runtime(ble_device_runtime_t *out, size_t max_count)
 {
     if (!out || max_count == 0) return 0;
-    cfg_device_t devs[CFG_MAX_DEVICES];
+    cfg_device_t *devs = calloc(CFG_MAX_DEVICES, sizeof(cfg_device_t));
+    if (!devs) return 0;
     size_t cnt = cfg_devices_list(devs, max_count < CFG_MAX_DEVICES ? max_count : CFG_MAX_DEVICES);
     int64_t ts = now_ms();
 
@@ -949,5 +1002,6 @@ size_t ble_presence_get_devices_runtime(ble_device_runtime_t *out, size_t max_co
         }
     }
     xSemaphoreGive(s_mutex);
+    free(devs);
     return cnt;
 }

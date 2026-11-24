@@ -562,12 +562,18 @@ static esp_err_t handle_system_factory_reset(httpd_req_t *req)
 
 static cJSON *build_presence_persons_json(bool include_device_config)
 {
-    ble_person_runtime_t persons[CFG_MAX_PERSONS];
-    ble_device_runtime_t devs[CFG_MAX_DEVICES];
+    cJSON *arr = cJSON_CreateArray();
+    ble_person_runtime_t *persons = calloc(CFG_MAX_PERSONS, sizeof(ble_person_runtime_t));
+    ble_device_runtime_t *devs = calloc(CFG_MAX_DEVICES, sizeof(ble_device_runtime_t));
+    if (!persons || !devs) {
+        free(persons);
+        free(devs);
+        return arr;
+    }
+
     size_t p_cnt = ble_presence_get_persons_runtime(persons, CFG_MAX_PERSONS);
     size_t d_cnt = ble_presence_get_devices_runtime(devs, CFG_MAX_DEVICES);
 
-    cJSON *arr = cJSON_CreateArray();
     for (size_t i = 0; i < p_cnt; i++) {
         cJSON *po = cJSON_CreateObject();
         cJSON_AddNumberToObject(po, "id", persons[i].id);
@@ -599,6 +605,8 @@ static cJSON *build_presence_persons_json(bool include_device_config)
         cJSON_AddItemToObject(po, "devices", darr);
         cJSON_AddItemToArray(arr, po);
     }
+    free(persons);
+    free(devs);
     return arr;
 }
 
@@ -753,7 +761,8 @@ static esp_err_t handle_device_item(httpd_req_t *req)
         const cJSON *xr = cJSON_GetObjectItem(body, "exit_rssi");
         const cJSON *at = cJSON_GetObjectItem(body, "away_timeout_s");
 
-        const char *new_label = cJSON_IsString(label) ? label->valuestring : cur.label;
+        char new_label[32];
+        strlcpy(new_label, cJSON_IsString(label) ? label->valuestring : cur.label, sizeof(new_label));
         int8_t enter_rssi = cJSON_IsNumber(er) ? (int8_t)er->valuedouble : cur.enter_rssi;
         int8_t exit_rssi = cJSON_IsNumber(xr) ? (int8_t)xr->valuedouble : cur.exit_rssi;
         uint16_t away_to = cJSON_IsNumber(at) ? (uint16_t)at->valuedouble : cur.away_timeout_s;
@@ -1362,7 +1371,7 @@ esp_err_t web_server_start(void)
     };
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &static_uri));
 
-    xTaskCreate(ws_broadcast_task, "ws_bcast", 4096, NULL, 4, NULL);
+    xTaskCreate(ws_broadcast_task, "ws_bcast", 6144, NULL, 4, NULL);
     ESP_LOGI(TAG, "Web server started on :80");
     return ESP_OK;
 }
