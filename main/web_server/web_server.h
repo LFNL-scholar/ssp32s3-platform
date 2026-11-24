@@ -1,0 +1,14 @@
+#pragma once
+
+#include "esp_err.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+esp_err_t web_server_start(void);
+void web_server_ws_broadcast(const char *json_str);
+
+#ifdef __cplusplus
+}
+#endif

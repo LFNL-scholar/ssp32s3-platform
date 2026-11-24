@@ -1,0 +1,1189 @@
+#include "web_server.h"
+#include "auth_mgr.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "esp_http_server.h"
+#include "esp_timer.h"
+#include "esp_system.h"
+#include "esp_log.h"
+#include "cJSON.h"
+
+#include "cfg_store.h"
+#include "wifi_mgr.h"
+#include "sys_monitor.h"
+#include "ble_presence.h"
+#include "presence_log.h"
+#include "led_ctrl.h"
+#include "ota_mgr.h"
+
+static const char *TAG = "web_server";
+
+#define MAX_WS_CLIENTS 8
+
+static httpd_handle_t s_httpd = NULL;
+static SemaphoreHandle_t s_ws_mutex = NULL;
+static int s_ws_fds[MAX_WS_CLIENTS];
+
+typedef struct {
+    char *msg;
+} ws_bcast_work_t;
+
+static void ws_client_add(int fd)
+{
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+        if (s_ws_fds[i] == fd) {
+            xSemaphoreGive(s_ws_mutex);
+            return;
+        }
+    }
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+        if (s_ws_fds[i] < 0) {
+            s_ws_fds[i] = fd;
+            break;
+        }
+    }
+    xSemaphoreGive(s_ws_mutex);
+}
+
+static void ws_client_remove(int fd)
+{
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+        if (s_ws_fds[i] == fd) {
+            s_ws_fds[i] = -1;
+        }
+    }
+    xSemaphoreGive(s_ws_mutex);
+}
+
+static int ws_client_count(void)
+{
+    int cnt = 0;
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+        if (s_ws_fds[i] >= 0) cnt++;
+    }
+    xSemaphoreGive(s_ws_mutex);
+    return cnt;
+}
+
+static void on_httpd_close(httpd_handle_t hd, int sockfd)
+{
+    ws_client_remove(sockfd);
+    close(sockfd);
+}
+
+static void ws_bcast_work_cb(void *arg)
+{
+    ws_bcast_work_t *w = (ws_bcast_work_t *)arg;
+    if (!w || !w->msg) {
+        free(w);
+        return;
+    }
+
+    int fds[MAX_WS_CLIENTS];
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    memcpy(fds, s_ws_fds, sizeof(fds));
+    xSemaphoreGive(s_ws_mutex);
+
+    httpd_ws_frame_t pkt = {
+        .final = true,
+        .fragmented = false,
+        .type = HTTPD_WS_TYPE_TEXT,
+        .payload = (uint8_t *)w->msg,
+        .len = strlen(w->msg),
+    };
+
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+        if (fds[i] >= 0) {
+            if (httpd_ws_send_frame_async(s_httpd, fds[i], &pkt) != ESP_OK) {
+                ws_client_remove(fds[i]);
+            }
+        }
+    }
+
+    free(w->msg);
+    free(w);
+}
+
+void web_server_ws_broadcast(const char *json_str)
+{
+    if (!s_httpd || !json_str || ws_client_count() == 0) return;
+
+    ws_bcast_work_t *w = malloc(sizeof(ws_bcast_work_t));
+    if (!w) return;
+    w->msg = strdup(json_str);
+    if (!w->msg) {
+        free(w);
+        return;
+    }
+    if (httpd_queue_work(s_httpd, ws_bcast_work_cb, w) != ESP_OK) {
+        free(w->msg);
+        free(w);
+    }
+}
+
+// ---------- Helpers ----------
+
+static esp_err_t send_json(httpd_req_t *req, const char *status, cJSON *obj)
+{
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char *str = cJSON_PrintUnformatted(obj);
+    cJSON_Delete(obj);
+    if (!str) {
+        httpd_resp_send_500(req);
+        return ESP_OK;
+    }
+    httpd_resp_send(req, str, HTTPD_RESP_USE_STRLEN);
+    cJSON_free(str);
+    return ESP_OK;
+}
+
+static esp_err_t send_err(httpd_req_t *req, const char *status, const char *msg)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", false);
+    cJSON_AddStringToObject(o, "error", msg);
+    return send_json(req, status, o);
+}
+
+static cJSON *read_json_body(httpd_req_t *req, size_t max_len)
+{
+    if (req->content_len <= 0 || (size_t)req->content_len > max_len) return NULL;
+    char *buf = malloc(req->content_len + 1);
+    if (!buf) return NULL;
+
+    int total = 0;
+    while (total < req->content_len) {
+        int r = httpd_req_recv(req, buf + total, req->content_len - total);
+        if (r <= 0) {
+            if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+            free(buf);
+            return NULL;
+        }
+        total += r;
+    }
+    buf[total] = '\0';
+    cJSON *json = cJSON_Parse(buf);
+    free(buf);
+    return json;
+}
+
+static bool require_auth(httpd_req_t *req)
+{
+    if (auth_mgr_check_req(req)) return true;
+    send_err(req, "401 Unauthorized", "unauthorized");
+    return false;
+}
+
+static bool require_setup_or_auth(httpd_req_t *req)
+{
+    if (!cfg_auth_is_initialized() || auth_mgr_check_req(req)) return true;
+    send_err(req, "401 Unauthorized", "unauthorized");
+    return false;
+}
+
+static void format_mac_str(const uint8_t mac[6], char *out, size_t len)
+{
+    snprintf(out, len, "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
+}
+
+static bool parse_mac_str(const char *str, uint8_t out_le[6])
+{
+    if (!str) return false;
+    unsigned int b[6];
+    if (sscanf(str, "%2x:%2x:%2x:%2x:%2x:%2x",
+               &b[5], &b[4], &b[3], &b[2], &b[1], &b[0]) != 6) {
+        return false;
+    }
+    for (int i = 0; i < 6; i++) out_le[i] = (uint8_t)b[i];
+    return true;
+}
+
+static void set_session_cookie(httpd_req_t *req, const char *token)
+{
+    static char hdr[160];
+    snprintf(hdr, sizeof(hdr), "sid=%s; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400", token);
+    httpd_resp_set_hdr(req, "Set-Cookie", hdr);
+}
+
+static void delayed_reboot_cb(void *arg)
+{
+    esp_restart();
+}
+
+static void schedule_reboot_ms(uint32_t ms)
+{
+    const esp_timer_create_args_t targs = { .callback = delayed_reboot_cb, .name = "sys_reboot" };
+    esp_timer_handle_t t = NULL;
+    if (esp_timer_create(&targs, &t) == ESP_OK) {
+        esp_timer_start_once(t, (uint64_t)ms * 1000ULL);
+    }
+}
+
+// ---------- Auth & Setup Handlers ----------
+
+static esp_err_t handle_auth_status(httpd_req_t *req)
+{
+    cfg_settings_t cfg;
+    cfg_settings_get(&cfg);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "setup_required", !cfg_auth_is_initialized());
+    cJSON_AddBoolToObject(o, "authenticated", auth_mgr_check_req(req));
+    cJSON_AddBoolToObject(o, "ap_mode", wifi_mgr_is_ap_active());
+    cJSON_AddStringToObject(o, "hostname", cfg.hostname);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_setup_init(httpd_req_t *req)
+{
+    if (cfg_auth_is_initialized()) {
+        return send_err(req, "403 Forbidden", "管理员密码已初始化");
+    }
+    cJSON *body = read_json_body(req, 512);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    const cJSON *pw = cJSON_GetObjectItem(body, "password");
+    if (!cJSON_IsString(pw) || strlen(pw->valuestring) < 4) {
+        cJSON_Delete(body);
+        return send_err(req, "400 Bad Request", "密码长度至少 4 位");
+    }
+
+    esp_err_t err = cfg_auth_set_password(pw->valuestring);
+    cJSON_Delete(body);
+    if (err != ESP_OK) {
+        return send_err(req, "500 Internal Server Error", "保存密码失败");
+    }
+
+    char tok[65];
+    if (auth_mgr_create_session(tok, sizeof(tok)) == ESP_OK) {
+        set_session_cookie(req, tok);
+    }
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_auth_login(httpd_req_t *req)
+{
+    if (!cfg_auth_is_initialized()) {
+        return send_err(req, "400 Bad Request", "请先完成首次初始化");
+    }
+    cJSON *body = read_json_body(req, 512);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    const cJSON *pw = cJSON_GetObjectItem(body, "password");
+    if (!cJSON_IsString(pw)) {
+        cJSON_Delete(body);
+        return send_err(req, "400 Bad Request", "缺少密码");
+    }
+
+    char tok[65];
+    int retry_s = 0;
+    esp_err_t err = auth_mgr_login(pw->valuestring, tok, sizeof(tok), &retry_s);
+    cJSON_Delete(body);
+
+    if (err == ESP_ERR_INVALID_STATE) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "登录失败次数过多，请在 %d 秒后重试", retry_s);
+        return send_err(req, "429 Too Many Requests", msg);
+    }
+    if (err != ESP_OK) {
+        return send_err(req, "401 Unauthorized", "密码错误");
+    }
+
+    set_session_cookie(req, tok);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_auth_logout(httpd_req_t *req)
+{
+    auth_mgr_logout_req(req);
+    httpd_resp_set_hdr(req, "Set-Cookie", "sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_auth_password(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *body = read_json_body(req, 512);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    const cJSON *old_pw = cJSON_GetObjectItem(body, "old_password");
+    const cJSON *new_pw = cJSON_GetObjectItem(body, "new_password");
+    if (!cJSON_IsString(old_pw) || !cJSON_IsString(new_pw) || strlen(new_pw->valuestring) < 4) {
+        cJSON_Delete(body);
+        return send_err(req, "400 Bad Request", "新密码长度至少 4 位");
+    }
+    if (!cfg_auth_verify_password(old_pw->valuestring)) {
+        cJSON_Delete(body);
+        return send_err(req, "403 Forbidden", "原密码错误");
+    }
+
+    esp_err_t err = cfg_auth_set_password(new_pw->valuestring);
+    cJSON_Delete(body);
+    if (err != ESP_OK) return send_err(req, "500 Internal Server Error", "保存失败");
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+// ---------- Wi-Fi Handlers ----------
+
+static const char *authmode_str(wifi_auth_mode_t m)
+{
+    switch (m) {
+    case WIFI_AUTH_OPEN:         return "OPEN";
+    case WIFI_AUTH_WEP:          return "WEP";
+    case WIFI_AUTH_WPA_PSK:      return "WPA";
+    case WIFI_AUTH_WPA2_PSK:     return "WPA2";
+    case WIFI_AUTH_WPA_WPA2_PSK: return "WPA/WPA2";
+    case WIFI_AUTH_WPA3_PSK:     return "WPA3";
+    case WIFI_AUTH_WPA2_WPA3_PSK:return "WPA2/WPA3";
+    default:                     return "SECURED";
+    }
+}
+
+static esp_err_t handle_wifi_scan(httpd_req_t *req)
+{
+    if (!require_setup_or_auth(req)) return ESP_OK;
+
+    wifi_scan_ap_t *aps = calloc(WIFI_SCAN_MAX_APS, sizeof(wifi_scan_ap_t));
+    if (!aps) return send_err(req, "500 Internal Server Error", "内存不足");
+
+    size_t cnt = 0;
+    esp_err_t err = wifi_mgr_scan(aps, WIFI_SCAN_MAX_APS, &cnt);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr = cJSON_CreateArray();
+    for (size_t i = 0; i < cnt; i++) {
+        cJSON *a = cJSON_CreateObject();
+        cJSON_AddStringToObject(a, "ssid", aps[i].ssid);
+        cJSON_AddNumberToObject(a, "rssi", aps[i].rssi);
+        cJSON_AddNumberToObject(a, "channel", aps[i].channel);
+        cJSON_AddStringToObject(a, "auth", authmode_str(aps[i].authmode));
+        cJSON_AddItemToArray(arr, a);
+    }
+    free(aps);
+
+    cJSON_AddBoolToObject(root, "ok", err == ESP_OK);
+    cJSON_AddItemToObject(root, "aps", arr);
+    return send_json(req, err == ESP_OK ? "200 OK" : "500 Internal Server Error", root);
+}
+
+static esp_err_t handle_wifi_connect(httpd_req_t *req)
+{
+    if (!require_setup_or_auth(req)) return ESP_OK;
+    cJSON *body = read_json_body(req, 512);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    const cJSON *ssid = cJSON_GetObjectItem(body, "ssid");
+    const cJSON *pw = cJSON_GetObjectItem(body, "password");
+    if (!cJSON_IsString(ssid) || ssid->valuestring[0] == '\0') {
+        cJSON_Delete(body);
+        return send_err(req, "400 Bad Request", "SSID 不能为空");
+    }
+    const char *pass_str = cJSON_IsString(pw) ? pw->valuestring : "";
+
+    char ip[16] = {0};
+    char err_msg[128] = {0};
+    esp_err_t err = wifi_mgr_connect_test(ssid->valuestring, pass_str, ip, sizeof(ip), err_msg, sizeof(err_msg));
+    cJSON_Delete(body);
+
+    if (err != ESP_OK) {
+        return send_err(req, "400 Bad Request", err_msg[0] ? err_msg : "连接失败");
+    }
+
+    cfg_settings_t cfg;
+    cfg_settings_get(&cfg);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddStringToObject(o, "ip", ip);
+    cJSON_AddStringToObject(o, "hostname", cfg.hostname);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_wifi_status(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    wifi_status_info_t ws;
+    wifi_mgr_get_status(&ws);
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "mode", ws.mode);
+    cJSON_AddBoolToObject(o, "ap_active", ws.ap_active);
+    cJSON_AddBoolToObject(o, "sta_connected", ws.sta_connected);
+    cJSON_AddStringToObject(o, "ap_ssid", ws.ap_ssid);
+    cJSON_AddStringToObject(o, "sta_ssid", ws.sta_ssid);
+    cJSON_AddNumberToObject(o, "rssi", ws.rssi);
+    cJSON_AddNumberToObject(o, "channel", ws.channel);
+    cJSON_AddStringToObject(o, "ip", ws.ip);
+    cJSON_AddStringToObject(o, "netmask", ws.netmask);
+    cJSON_AddStringToObject(o, "gateway", ws.gateway);
+    cJSON_AddStringToObject(o, "dns", ws.dns);
+    cJSON_AddBoolToObject(o, "time_synced", ws.time_synced);
+    return send_json(req, "200 OK", o);
+}
+
+// ---------- System & Settings & OTA Handlers ----------
+
+static esp_err_t handle_system_info(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *info = sys_monitor_build_info_json();
+    return send_json(req, "200 OK", info);
+}
+
+static esp_err_t handle_system_status(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *st = sys_monitor_build_telemetry_json();
+    return send_json(req, "200 OK", st);
+}
+
+static esp_err_t handle_settings_get(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cfg_settings_t cfg;
+    cfg_settings_get(&cfg);
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "hostname", cfg.hostname);
+    cJSON_AddNumberToObject(o, "led_gpio", cfg.led_gpio);
+    cJSON_AddNumberToObject(o, "led_brightness", cfg.led_brightness);
+    cJSON_AddNumberToObject(o, "led_away_mode", cfg.led_away_mode);
+    cJSON_AddStringToObject(o, "ntp_server1", cfg.ntp_server1);
+    cJSON_AddStringToObject(o, "ntp_server2", cfg.ntp_server2);
+    cJSON_AddStringToObject(o, "timezone", cfg.timezone);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_settings_put(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *body = read_json_body(req, 1024);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    cfg_settings_t cfg;
+    cfg_settings_get(&cfg);
+
+    const cJSON *v;
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "hostname"))) && v->valuestring[0]) {
+        strlcpy(cfg.hostname, v->valuestring, sizeof(cfg.hostname));
+    }
+    if (cJSON_IsNumber((v = cJSON_GetObjectItem(body, "led_gpio")))) {
+        cfg.led_gpio = (int32_t)v->valuedouble;
+    }
+    if (cJSON_IsNumber((v = cJSON_GetObjectItem(body, "led_brightness")))) {
+        int b = (int)v->valuedouble;
+        cfg.led_brightness = (uint8_t)(b < 0 ? 0 : (b > 100 ? 100 : b));
+    }
+    if (cJSON_IsNumber((v = cJSON_GetObjectItem(body, "led_away_mode")))) {
+        cfg.led_away_mode = v->valuedouble ? 1 : 0;
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "ntp_server1"))) && v->valuestring[0]) {
+        strlcpy(cfg.ntp_server1, v->valuestring, sizeof(cfg.ntp_server1));
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "ntp_server2")))) {
+        strlcpy(cfg.ntp_server2, v->valuestring, sizeof(cfg.ntp_server2));
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "timezone"))) && v->valuestring[0]) {
+        strlcpy(cfg.timezone, v->valuestring, sizeof(cfg.timezone));
+    }
+    cJSON_Delete(body);
+
+    esp_err_t err = cfg_settings_set(&cfg);
+    if (err != ESP_OK) {
+        return send_err(req, "400 Bad Request", "参数无效（注意 GPIO 35/36/37 不可用于 LED）");
+    }
+
+    led_ctrl_apply_settings(cfg.led_gpio, cfg.led_brightness, cfg.led_away_mode);
+    wifi_mgr_apply_settings();
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_ota_post(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    return ota_mgr_handle_upload(req);
+}
+
+static esp_err_t handle_system_reboot(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    send_json(req, "200 OK", o);
+    schedule_reboot_ms(500);
+    return ESP_OK;
+}
+
+static esp_err_t handle_system_factory_reset(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    led_ctrl_set_flag(LED_FLAG_FACTORY_RESET, true);
+    auth_mgr_clear_all();
+    cfg_store_factory_reset();
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    send_json(req, "200 OK", o);
+    schedule_reboot_ms(700);
+    return ESP_OK;
+}
+
+// ---------- Presence Handlers ----------
+
+static cJSON *build_presence_persons_json(bool include_device_config)
+{
+    ble_person_runtime_t persons[CFG_MAX_PERSONS];
+    ble_device_runtime_t devs[CFG_MAX_DEVICES];
+    size_t p_cnt = ble_presence_get_persons_runtime(persons, CFG_MAX_PERSONS);
+    size_t d_cnt = ble_presence_get_devices_runtime(devs, CFG_MAX_DEVICES);
+
+    cJSON *arr = cJSON_CreateArray();
+    for (size_t i = 0; i < p_cnt; i++) {
+        cJSON *po = cJSON_CreateObject();
+        cJSON_AddNumberToObject(po, "id", persons[i].id);
+        cJSON_AddStringToObject(po, "name", persons[i].name);
+        cJSON_AddBoolToObject(po, "is_home", persons[i].is_home);
+
+        cJSON *darr = cJSON_CreateArray();
+        for (size_t j = 0; j < d_cnt; j++) {
+            if (devs[j].person_id != persons[i].id) continue;
+            cJSON *do_ = cJSON_CreateObject();
+            cJSON_AddNumberToObject(do_, "id", devs[j].id);
+            cJSON_AddStringToObject(do_, "label", devs[j].label);
+            cJSON_AddBoolToObject(do_, "is_home", devs[j].is_home);
+            cJSON_AddNumberToObject(do_, "rssi", devs[j].smoothed_rssi);
+            cJSON_AddNumberToObject(do_, "raw_rssi", devs[j].raw_rssi);
+            cJSON_AddNumberToObject(do_, "seen_ago_s", devs[j].seen_ago_s);
+
+            if (include_device_config) {
+                char mac_str[18];
+                format_mac_str(devs[j].mac, mac_str, sizeof(mac_str));
+                cJSON_AddStringToObject(do_, "match_type", devs[j].match_type == MATCH_IRK ? "IRK" : "MAC");
+                cJSON_AddStringToObject(do_, "mac", mac_str);
+                cJSON_AddNumberToObject(do_, "enter_rssi", devs[j].enter_rssi);
+                cJSON_AddNumberToObject(do_, "exit_rssi", devs[j].exit_rssi);
+                cJSON_AddNumberToObject(do_, "away_timeout_s", devs[j].away_timeout_s);
+            }
+            cJSON_AddItemToArray(darr, do_);
+        }
+        cJSON_AddItemToObject(po, "devices", darr);
+        cJSON_AddItemToArray(arr, po);
+    }
+    return arr;
+}
+
+static esp_err_t handle_presence_state(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    ble_summary_t bs;
+    ble_presence_get_summary(&bs);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddItemToObject(root, "persons", build_presence_persons_json(true));
+
+    cJSON *pair = cJSON_CreateObject();
+    cJSON_AddBoolToObject(pair, "active", bs.pairing_active);
+    cJSON_AddNumberToObject(pair, "person_id", bs.pairing_person_id);
+    cJSON_AddNumberToObject(pair, "remaining_s", bs.pairing_remaining_s);
+    cJSON_AddItemToObject(root, "pairing", pair);
+    return send_json(req, "200 OK", root);
+}
+
+static esp_err_t handle_persons_post(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *body = read_json_body(req, 256);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    const cJSON *name = cJSON_GetObjectItem(body, "name");
+    if (!cJSON_IsString(name) || name->valuestring[0] == '\0') {
+        cJSON_Delete(body);
+        return send_err(req, "400 Bad Request", "姓名不能为空");
+    }
+
+    cfg_person_t created = {0};
+    esp_err_t err = cfg_person_add(name->valuestring, &created);
+    cJSON_Delete(body);
+
+    if (err != ESP_OK) return send_err(req, "400 Bad Request", "添加失败（可能已达人数上限）");
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddNumberToObject(o, "id", created.id);
+    cJSON_AddStringToObject(o, "name", created.name);
+    return send_json(req, "200 OK", o);
+}
+
+static int parse_id_suffix(const char *uri, const char *prefix)
+{
+    size_t plen = strlen(prefix);
+    if (strncmp(uri, prefix, plen) != 0) return -1;
+    const char *p = uri + plen;
+    if (*p == '\0') return -1;
+    char *end = NULL;
+    long val = strtol(p, &end, 10);
+    if (end == p || (*end != '\0' && *end != '?') || val <= 0 || val > 255) return -1;
+    return (int)val;
+}
+
+static esp_err_t handle_person_item(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    int id = parse_id_suffix(req->uri, "/api/presence/persons/");
+    if (id < 0) return send_err(req, "400 Bad Request", "无效的人员 ID");
+
+    if (req->method == HTTP_PUT) {
+        cJSON *body = read_json_body(req, 256);
+        if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+        const cJSON *name = cJSON_GetObjectItem(body, "name");
+        if (!cJSON_IsString(name) || name->valuestring[0] == '\0') {
+            cJSON_Delete(body);
+            return send_err(req, "400 Bad Request", "姓名不能为空");
+        }
+        esp_err_t err = cfg_person_rename((uint8_t)id, name->valuestring);
+        cJSON_Delete(body);
+        if (err != ESP_OK) return send_err(req, "404 Not Found", "人员不存在");
+    } else if (req->method == HTTP_DELETE) {
+        ble_presence_on_person_deleted((uint8_t)id);
+        esp_err_t err = cfg_person_delete((uint8_t)id);
+        if (err != ESP_OK) return send_err(req, "404 Not Found", "人员不存在");
+    } else {
+        return send_err(req, "405 Method Not Allowed", "不支持的方法");
+    }
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_devices_post(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *body = read_json_body(req, 512);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    const cJSON *pid = cJSON_GetObjectItem(body, "person_id");
+    const cJSON *label = cJSON_GetObjectItem(body, "label");
+    const cJSON *mac = cJSON_GetObjectItem(body, "mac");
+    if (!cJSON_IsNumber(pid) || !cJSON_IsString(label) || !cJSON_IsString(mac)) {
+        cJSON_Delete(body);
+        return send_err(req, "400 Bad Request", "缺少必要字段");
+    }
+
+    cfg_device_t dev = {0};
+    dev.person_id = (uint8_t)pid->valuedouble;
+    strlcpy(dev.label, label->valuestring, sizeof(dev.label));
+    dev.match_type = MATCH_FIXED_MAC;
+    if (!parse_mac_str(mac->valuestring, dev.mac)) {
+        cJSON_Delete(body);
+        return send_err(req, "400 Bad Request", "MAC 地址格式无效");
+    }
+
+    const cJSON *er = cJSON_GetObjectItem(body, "enter_rssi");
+    const cJSON *xr = cJSON_GetObjectItem(body, "exit_rssi");
+    const cJSON *at = cJSON_GetObjectItem(body, "away_timeout_s");
+    dev.enter_rssi = cJSON_IsNumber(er) ? (int8_t)er->valuedouble : -75;
+    dev.exit_rssi = cJSON_IsNumber(xr) ? (int8_t)xr->valuedouble : -85;
+    dev.away_timeout_s = cJSON_IsNumber(at) ? (uint16_t)at->valuedouble : 120;
+    cJSON_Delete(body);
+
+    cfg_device_t saved = {0};
+    esp_err_t err = cfg_device_add(&dev, &saved);
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_err(req, "409 Conflict", "该 MAC 设备已绑定");
+    }
+    if (err != ESP_OK) {
+        return send_err(req, "400 Bad Request", "绑定设备失败");
+    }
+    ble_presence_reload_config();
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddNumberToObject(o, "id", saved.id);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_device_item(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    int id = parse_id_suffix(req->uri, "/api/presence/devices/");
+    if (id < 0) return send_err(req, "400 Bad Request", "无效的设备 ID");
+
+    if (req->method == HTTP_PUT) {
+        cJSON *body = read_json_body(req, 512);
+        if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+        cfg_device_t cur;
+        if (!cfg_device_get((uint8_t)id, &cur)) {
+            cJSON_Delete(body);
+            return send_err(req, "404 Not Found", "设备不存在");
+        }
+        const cJSON *label = cJSON_GetObjectItem(body, "label");
+        const cJSON *er = cJSON_GetObjectItem(body, "enter_rssi");
+        const cJSON *xr = cJSON_GetObjectItem(body, "exit_rssi");
+        const cJSON *at = cJSON_GetObjectItem(body, "away_timeout_s");
+
+        const char *new_label = cJSON_IsString(label) ? label->valuestring : cur.label;
+        int8_t enter_rssi = cJSON_IsNumber(er) ? (int8_t)er->valuedouble : cur.enter_rssi;
+        int8_t exit_rssi = cJSON_IsNumber(xr) ? (int8_t)xr->valuedouble : cur.exit_rssi;
+        uint16_t away_to = cJSON_IsNumber(at) ? (uint16_t)at->valuedouble : cur.away_timeout_s;
+        cJSON_Delete(body);
+
+        esp_err_t err = cfg_device_update((uint8_t)id, new_label, enter_rssi, exit_rssi, away_to);
+        if (err != ESP_OK) return send_err(req, "400 Bad Request", "更新失败");
+    } else if (req->method == HTTP_DELETE) {
+        ble_presence_on_device_deleted((uint8_t)id);
+        esp_err_t err = cfg_device_delete((uint8_t)id);
+        if (err != ESP_OK) return send_err(req, "404 Not Found", "设备不存在");
+    } else {
+        return send_err(req, "405 Method Not Allowed", "不支持的方法");
+    }
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_pair_start(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *body = read_json_body(req, 256);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    const cJSON *pid = cJSON_GetObjectItem(body, "person_id");
+    const cJSON *label = cJSON_GetObjectItem(body, "label");
+    const cJSON *to = cJSON_GetObjectItem(body, "timeout_s");
+    if (!cJSON_IsNumber(pid) || !cJSON_IsString(label) || label->valuestring[0] == '\0') {
+        cJSON_Delete(body);
+        return send_err(req, "400 Bad Request", "缺少 person_id 或 label");
+    }
+    uint16_t timeout_s = cJSON_IsNumber(to) ? (uint16_t)to->valuedouble : 60;
+    esp_err_t err = ble_presence_start_pairing((uint8_t)pid->valuedouble, label->valuestring, timeout_s);
+    cJSON_Delete(body);
+
+    if (err != ESP_OK) {
+        return send_err(req, "409 Conflict", "无法启动配对（可能正在配对中或人员不存在）");
+    }
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_pair_stop(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    ble_presence_stop_pairing();
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_presence_scan(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    ble_nearby_dev_t *list = calloc(BLE_NEARBY_MAX, sizeof(ble_nearby_dev_t));
+    if (!list) return send_err(req, "500 Internal Server Error", "内存不足");
+
+    size_t cnt = ble_presence_get_nearby(list, BLE_NEARBY_MAX);
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr = cJSON_CreateArray();
+    for (size_t i = 0; i < cnt; i++) {
+        cJSON *d = cJSON_CreateObject();
+        char mac_str[18];
+        format_mac_str(list[i].mac, mac_str, sizeof(mac_str));
+        cJSON_AddStringToObject(d, "mac", mac_str);
+        cJSON_AddStringToObject(d, "addr_type", list[i].addr_type == 0 ? "PUBLIC" : "RANDOM");
+        cJSON_AddStringToObject(d, "name", list[i].name);
+        cJSON_AddNumberToObject(d, "rssi", list[i].rssi);
+        cJSON_AddNumberToObject(d, "seen_ago_s", list[i].seen_ago_s);
+        cJSON_AddItemToArray(arr, d);
+    }
+    free(list);
+    cJSON_AddItemToObject(root, "devices", arr);
+    return send_json(req, "200 OK", root);
+}
+
+static esp_err_t handle_presence_logs_get(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+
+    size_t limit = 50;
+    size_t offset = 0;
+    char qbuf[64];
+    if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
+        char val[16];
+        if (httpd_query_key_value(qbuf, "limit", val, sizeof(val)) == ESP_OK) {
+            long l = strtol(val, NULL, 10);
+            if (l > 0 && l <= 200) limit = (size_t)l;
+        }
+        if (httpd_query_key_value(qbuf, "offset", val, sizeof(val)) == ESP_OK) {
+            long o = strtol(val, NULL, 10);
+            if (o >= 0) offset = (size_t)o;
+        }
+    }
+
+    presence_log_entry_t *entries = calloc(limit, sizeof(presence_log_entry_t));
+    if (!entries) return send_err(req, "500 Internal Server Error", "内存不足");
+
+    size_t ret = 0, total = 0;
+    presence_log_query(offset, limit, entries, &ret, &total);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "total", total);
+    cJSON_AddNumberToObject(root, "offset", offset);
+    cJSON_AddNumberToObject(root, "limit", limit);
+    cJSON *arr = cJSON_CreateArray();
+    for (size_t i = 0; i < ret; i++) {
+        cJSON *e = cJSON_CreateObject();
+        cJSON_AddNumberToObject(e, "seq", entries[i].seq);
+        cJSON_AddNumberToObject(e, "timestamp", (double)entries[i].timestamp);
+        cJSON_AddNumberToObject(e, "uptime_s", entries[i].uptime_s);
+        cJSON_AddBoolToObject(e, "time_synced", entries[i].time_synced != 0);
+        cJSON_AddNumberToObject(e, "person_id", entries[i].person_id);
+        cJSON_AddStringToObject(e, "person_name", entries[i].person_name);
+        cJSON_AddStringToObject(e, "event", entries[i].event == PRESENCE_EVENT_ARRIVE ? "ARRIVE" : "LEAVE");
+        cJSON_AddStringToObject(e, "device", entries[i].device_label);
+        cJSON_AddNumberToObject(e, "rssi", entries[i].rssi);
+        cJSON_AddItemToArray(arr, e);
+    }
+    free(entries);
+    cJSON_AddItemToObject(root, "logs", arr);
+    return send_json(req, "200 OK", root);
+}
+
+static esp_err_t handle_presence_logs_delete(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    presence_log_clear();
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+// ---------- WebSocket Handler ----------
+
+#ifdef CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
+static esp_err_t ws_pre_handshake(httpd_req_t *req)
+{
+    if (!auth_mgr_check_req(req)) {
+        httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Unauthorized");
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+#endif
+
+static esp_err_t handle_ws(httpd_req_t *req)
+{
+    if (req->method == HTTP_GET) {
+        if (!auth_mgr_check_req(req)) {
+            httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
+            return ESP_FAIL;
+        }
+        ws_client_add(httpd_req_to_sockfd(req));
+        return ESP_OK;
+    }
+
+    httpd_ws_frame_t frame;
+    memset(&frame, 0, sizeof(frame));
+    esp_err_t ret = httpd_ws_recv_frame(req, &frame, 0);
+    if (ret != ESP_OK) return ret;
+
+    if (frame.type == HTTPD_WS_TYPE_CLOSE) {
+        ws_client_remove(httpd_req_to_sockfd(req));
+        return ESP_OK;
+    }
+
+    if (frame.len > 0 && frame.len < 512) {
+        uint8_t *buf = malloc(frame.len + 1);
+        if (buf) {
+            frame.payload = buf;
+            if (httpd_ws_recv_frame(req, &frame, frame.len) == ESP_OK) {
+                if (frame.type == HTTPD_WS_TYPE_PING) {
+                    frame.type = HTTPD_WS_TYPE_PONG;
+                    httpd_ws_send_frame(req, &frame);
+                }
+            }
+            free(buf);
+        }
+    }
+    return ESP_OK;
+}
+
+// ---------- Captive Portal & Static Gzip Handler ----------
+
+static bool is_captive_probe_uri(const char *uri)
+{
+    return strcmp(uri, "/generate_204") == 0 ||
+           strcmp(uri, "/gen_204") == 0 ||
+           strcmp(uri, "/hotspot-detect.html") == 0 ||
+           strcmp(uri, "/library/test/success.html") == 0 ||
+           strcmp(uri, "/connecttest.txt") == 0 ||
+           strcmp(uri, "/ncsi.txt") == 0 ||
+           strcmp(uri, "/canonical.html") == 0 ||
+           strcmp(uri, "/success.txt") == 0;
+}
+
+static bool is_local_host_hdr(httpd_req_t *req)
+{
+    char host[96] = {0};
+    if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK) {
+        return true;
+    }
+    char *colon = strchr(host, ':');
+    if (colon) *colon = '\0';
+
+    if (strcmp(host, "192.168.4.1") == 0 || strcmp(host, "localhost") == 0) {
+        return true;
+    }
+    size_t len = strlen(host);
+    if (len > 6 && strcmp(host + len - 6, ".local") == 0) {
+        return true;
+    }
+    return false;
+}
+
+static const char *mime_type_for_path(const char *path)
+{
+    size_t len = strlen(path);
+    if (len >= 5 && strcmp(path + len - 5, ".html") == 0) return "text/html; charset=utf-8";
+    if (len >= 3 && strcmp(path + len - 3, ".js") == 0)   return "application/javascript; charset=utf-8";
+    if (len >= 4 && strcmp(path + len - 4, ".css") == 0)  return "text/css; charset=utf-8";
+    if (len >= 4 && strcmp(path + len - 4, ".svg") == 0)  return "image/svg+xml";
+    if (len >= 5 && strcmp(path + len - 5, ".json") == 0) return "application/json";
+    if (len >= 4 && strcmp(path + len - 4, ".png") == 0)  return "image/png";
+    if (len >= 4 && strcmp(path + len - 4, ".ico") == 0)  return "image/x-icon";
+    return "application/octet-stream";
+}
+
+static esp_err_t handle_static_get(httpd_req_t *req)
+{
+    // Strip query string
+    char clean_uri[256];
+    strlcpy(clean_uri, req->uri, sizeof(clean_uri));
+    char *q = strchr(clean_uri, '?');
+    if (q) *q = '\0';
+
+    if (strncmp(clean_uri, "/api/", 5) == 0) {
+        return send_err(req, "404 Not Found", "API endpoint not found");
+    }
+
+    if (wifi_mgr_is_ap_active() && (is_captive_probe_uri(clean_uri) || !is_local_host_hdr(req))) {
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+        httpd_resp_send(req, NULL, 0);
+        return ESP_OK;
+    }
+
+    if (strcmp(clean_uri, "/") == 0) {
+        strlcpy(clean_uri, "/index.html", sizeof(clean_uri));
+    }
+
+    // Reject path traversal
+    if (strstr(clean_uri, "..") != NULL) {
+        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden");
+        return ESP_OK;
+    }
+
+    char gz_path[280];
+    snprintf(gz_path, sizeof(gz_path), "/www%s.gz", clean_uri);
+
+    struct stat st;
+    bool is_gz = false;
+    char open_path[280];
+
+    if (stat(gz_path, &st) == 0 && S_ISREG(st.st_mode)) {
+        strlcpy(open_path, gz_path, sizeof(open_path));
+        is_gz = true;
+    } else {
+        snprintf(open_path, sizeof(open_path), "/www%s", clean_uri);
+        if (stat(open_path, &st) != 0 || !S_ISREG(st.st_mode)) {
+            // SPA fallback to index.html.gz
+            strlcpy(clean_uri, "/index.html", sizeof(clean_uri));
+            strlcpy(open_path, "/www/index.html.gz", sizeof(open_path));
+            if (stat(open_path, &st) == 0 && S_ISREG(st.st_mode)) {
+                is_gz = true;
+            } else {
+                httpd_resp_send_404(req);
+                return ESP_OK;
+            }
+        }
+    }
+
+    FILE *f = fopen(open_path, "rb");
+    if (!f) {
+        httpd_resp_send_404(req);
+        return ESP_OK;
+    }
+
+    httpd_resp_set_type(req, mime_type_for_path(clean_uri));
+    if (is_gz) {
+        httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    }
+    if (strstr(clean_uri, "/assets/") != NULL) {
+        httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400");
+    } else {
+        httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    }
+
+    char *buf = malloc(4096);
+    if (!buf) {
+        fclose(f);
+        httpd_resp_send_500(req);
+        return ESP_OK;
+    }
+
+    size_t n;
+    while ((n = fread(buf, 1, 4096, f)) > 0) {
+        if (httpd_resp_send_chunk(req, buf, n) != ESP_OK) {
+            break;
+        }
+    }
+    httpd_resp_send_chunk(req, NULL, 0);
+
+    free(buf);
+    fclose(f);
+    return ESP_OK;
+}
+
+// ---------- 1Hz Telemetry & Presence Broadcast Task ----------
+
+static void ws_broadcast_task(void *arg)
+{
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (ws_client_count() == 0) continue;
+
+        cJSON *tel = sys_monitor_build_telemetry_json();
+        if (tel) {
+            char *str = cJSON_PrintUnformatted(tel);
+            cJSON_Delete(tel);
+            if (str) {
+                web_server_ws_broadcast(str);
+                cJSON_free(str);
+            }
+        }
+
+        cJSON *persons = build_presence_persons_json(false);
+        if (persons && cJSON_GetArraySize(persons) > 0) {
+            cJSON *tick = cJSON_CreateObject();
+            cJSON_AddStringToObject(tick, "type", "presence_tick");
+            cJSON_AddItemToObject(tick, "persons", persons);
+            char *str = cJSON_PrintUnformatted(tick);
+            cJSON_Delete(tick);
+            if (str) {
+                web_server_ws_broadcast(str);
+                cJSON_free(str);
+            }
+        } else if (persons) {
+            cJSON_Delete(persons);
+        }
+    }
+}
+
+esp_err_t web_server_start(void)
+{
+    auth_mgr_init();
+    s_ws_mutex = xSemaphoreCreateMutex();
+    if (!s_ws_mutex) return ESP_ERR_NO_MEM;
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) s_ws_fds[i] = -1;
+
+    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    cfg.server_port = 80;
+    cfg.max_uri_handlers = 36;
+    cfg.max_open_sockets = 10;
+    cfg.lru_purge_enable = true;
+    cfg.uri_match_fn = httpd_uri_match_wildcard;
+    cfg.stack_size = 8192;
+    cfg.recv_wait_timeout = 10;
+    cfg.send_wait_timeout = 10;
+    cfg.close_fn = on_httpd_close;
+
+    esp_err_t err = httpd_start(&s_httpd, &cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "httpd_start failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    const httpd_uri_t routes[] = {
+        { .uri = "/api/auth/status",           .method = HTTP_GET,    .handler = handle_auth_status },
+        { .uri = "/api/setup/init",            .method = HTTP_POST,   .handler = handle_setup_init },
+        { .uri = "/api/auth/login",            .method = HTTP_POST,   .handler = handle_auth_login },
+        { .uri = "/api/auth/logout",           .method = HTTP_POST,   .handler = handle_auth_logout },
+        { .uri = "/api/auth/password",         .method = HTTP_POST,   .handler = handle_auth_password },
+        { .uri = "/api/wifi/scan",             .method = HTTP_GET,    .handler = handle_wifi_scan },
+        { .uri = "/api/wifi/connect",          .method = HTTP_POST,   .handler = handle_wifi_connect },
+        { .uri = "/api/wifi/status",           .method = HTTP_GET,    .handler = handle_wifi_status },
+        { .uri = "/api/system/info",           .method = HTTP_GET,    .handler = handle_system_info },
+        { .uri = "/api/system/status",         .method = HTTP_GET,    .handler = handle_system_status },
+        { .uri = "/api/settings",              .method = HTTP_GET,    .handler = handle_settings_get },
+        { .uri = "/api/settings",              .method = HTTP_PUT,    .handler = handle_settings_put },
+        { .uri = "/api/ota",                   .method = HTTP_POST,   .handler = handle_ota_post },
+        { .uri = "/api/system/reboot",         .method = HTTP_POST,   .handler = handle_system_reboot },
+        { .uri = "/api/system/factory-reset",  .method = HTTP_POST,   .handler = handle_system_factory_reset },
+        { .uri = "/api/presence/state",        .method = HTTP_GET,    .handler = handle_presence_state },
+        { .uri = "/api/presence/persons",      .method = HTTP_POST,   .handler = handle_persons_post },
+        { .uri = "/api/presence/persons/*",    .method = HTTP_PUT,    .handler = handle_person_item },
+        { .uri = "/api/presence/persons/*",    .method = HTTP_DELETE, .handler = handle_person_item },
+        { .uri = "/api/presence/devices",      .method = HTTP_POST,   .handler = handle_devices_post },
+        { .uri = "/api/presence/devices/*",    .method = HTTP_PUT,    .handler = handle_device_item },
+        { .uri = "/api/presence/devices/*",    .method = HTTP_DELETE, .handler = handle_device_item },
+        { .uri = "/api/presence/pair/start",   .method = HTTP_POST,   .handler = handle_pair_start },
+        { .uri = "/api/presence/pair/stop",    .method = HTTP_POST,   .handler = handle_pair_stop },
+        { .uri = "/api/presence/scan",         .method = HTTP_GET,    .handler = handle_presence_scan },
+        { .uri = "/api/presence/logs",         .method = HTTP_GET,    .handler = handle_presence_logs_get },
+        { .uri = "/api/presence/logs",         .method = HTTP_DELETE, .handler = handle_presence_logs_delete },
+    };
+
+    for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
+        ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &routes[i]));
+    }
+
+    httpd_uri_t ws_uri = {
+        .uri = "/ws",
+        .method = HTTP_GET,
+        .handler = handle_ws,
+        .is_websocket = true,
+        .handle_ws_control_frames = true,
+#ifdef CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
+        .ws_pre_handshake_cb = ws_pre_handshake,
+#endif
+    };
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &ws_uri));
+
+    // Catch-all static + Captive Portal handler (must be registered last)
+    httpd_uri_t static_uri = {
+        .uri = "/*",
+        .method = HTTP_GET,
+        .handler = handle_static_get,
+    };
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &static_uri));
+
+    xTaskCreate(ws_broadcast_task, "ws_bcast", 4096, NULL, 4, NULL);
+    ESP_LOGI(TAG, "Web server started on :80");
+    return ESP_OK;
+}

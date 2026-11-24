@@ -1,0 +1,30 @@
+menu "SSP32S3 Platform Configuration"
+
+    config SSP_DEFAULT_LED_GPIO
+        int "Default WS2812B RGB LED GPIO"
+        range 0 48
+        default 48
+        help
+            GPIO connected to onboard WS2812B RGB LED.
+            ESP32-S3-DevKitC-1 v1.0 uses GPIO48 (v1.1 uses GPIO38).
+            Do NOT use GPIO35, 36, or 37 on N16R8 (occupied by Octal PSRAM).
+
+    config SSP_DEFAULT_LED_BRIGHTNESS
+        int "Default RGB LED brightness (%)"
+        range 0 100
+        default 20
+
+    config SSP_BOOT_BTN_GPIO
+        int "Factory reset button GPIO (active low)"
+        range 0 48
+        default 0
+
+    config SSP_SOFTAP_PREFIX
+        string "SoftAP SSID prefix"
+        default "SSP32S3-"
+
+    config SSP_DEFAULT_HOSTNAME
+        string "Default mDNS hostname"
+        default "ssp32s3"
+
+endmenu

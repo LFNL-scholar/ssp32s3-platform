@@ -1,0 +1,48 @@
+idf_component_register(
+    SRCS
+        "app_main.c"
+        "cfg_store/cfg_store.c"
+        "led_ctrl/led_ctrl.c"
+        "btn_reset/btn_reset.c"
+        "presence_log/presence_log.c"
+        "wifi_mgr/captive_dns.c"
+        "wifi_mgr/wifi_mgr.c"
+        "sys_monitor/sys_monitor.c"
+        "ble_presence/ble_presence.c"
+        "ota_mgr/ota_mgr.c"
+        "web_server/auth_mgr.c"
+        "web_server/web_server.c"
+    INCLUDE_DIRS
+        "."
+        "cfg_store"
+        "led_ctrl"
+        "btn_reset"
+        "presence_log"
+        "wifi_mgr"
+        "sys_monitor"
+        "ble_presence"
+        "ota_mgr"
+        "web_server"
+    REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_netif
+        esp_event
+        esp_http_server
+        esp_timer
+        esp_psram
+        esp_partition
+        esp_driver_gpio
+        esp_driver_tsens
+        app_update
+        mbedtls
+        bt
+        json
+        lwip
+)
+
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../web/dist")
+    littlefs_create_partition_image(www ../web/dist FLASH_IN_PROJECT)
+else()
+    message(WARNING "web/dist not found! Run 'cd web && npm install && npm run build' before flashing.")
+endif()
