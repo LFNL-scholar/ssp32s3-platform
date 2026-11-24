@@ -35,6 +35,9 @@ typedef struct {
     int32_t led_gpio;
     uint8_t led_brightness;   // 0..100
     uint8_t led_away_mode;    // 0 = dim red, 1 = off
+    bool led_idle_enabled;    // false = keep RGB off in normal idle state
+    bool lamp_auto_off_on_away;
+    bool lamp_auto_on_on_arrive;
     char ntp_server1[64];
     char ntp_server2[64];
     char timezone[48];

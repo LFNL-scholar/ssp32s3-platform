@@ -15,10 +15,11 @@
 #include "ble_presence.h"
 #include "web_server.h"
 #include "ota_mgr.h"
+#include "lamp_controller.h"
 
 static const char *TAG = "app_main";
 
-static void mount_littlefs(void)
+static bool mount_littlefs(void)
 {
     esp_vfs_littlefs_conf_t www_conf = {
         .base_path = "/www",
@@ -44,11 +45,12 @@ static void mount_littlefs(void)
     err = esp_vfs_littlefs_register(&data_conf);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to mount /data LittleFS: %s", esp_err_to_name(err));
-    } else {
-        size_t total = 0, used = 0;
-        esp_littlefs_info("data", &total, &used);
-        ESP_LOGI(TAG, "Mounted /data (%u / %u bytes)", (unsigned)used, (unsigned)total);
+        return false;
     }
+    size_t total = 0, used = 0;
+    esp_littlefs_info("data", &total, &used);
+    ESP_LOGI(TAG, "Mounted /data (%u / %u bytes)", (unsigned)used, (unsigned)total);
+    return true;
 }
 
 void app_main(void)
@@ -60,21 +62,26 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    mount_littlefs();
+    bool data_mounted = mount_littlefs();
     ESP_ERROR_CHECK(cfg_store_init());
 
     cfg_settings_t settings;
     cfg_settings_get(&settings);
 
-    ESP_ERROR_CHECK(led_ctrl_init(settings.led_gpio, settings.led_brightness, settings.led_away_mode));
+    ESP_ERROR_CHECK(led_ctrl_init(settings.led_gpio, settings.led_brightness,
+                                  settings.led_away_mode, settings.led_idle_enabled));
     ESP_ERROR_CHECK(btn_reset_init(CONFIG_SSP_BOOT_BTN_GPIO));
     ESP_ERROR_CHECK(presence_log_init());
     ESP_ERROR_CHECK(sys_monitor_init());
+
+    lamp_controller_set_ws_cb(web_server_ws_broadcast);
+    ESP_ERROR_CHECK(lamp_controller_init(data_mounted));
 
     wifi_mgr_set_ble_pause_cb(ble_presence_pause_scan);
     ESP_ERROR_CHECK(wifi_mgr_init());
 
     ble_presence_set_ws_cb(web_server_ws_broadcast);
+    ble_presence_set_home_count_cb(lamp_controller_on_presence_change);
     ESP_ERROR_CHECK(web_server_start());
     ESP_ERROR_CHECK(ble_presence_init());
 

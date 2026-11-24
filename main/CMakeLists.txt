@@ -12,6 +12,11 @@ idf_component_register(
         "ota_mgr/ota_mgr.c"
         "web_server/auth_mgr.c"
         "web_server/web_server.c"
+        "lamp_ctrl/cc1101.c"
+        "lamp_ctrl/waveform.c"
+        "lamp_ctrl/rf_storage.c"
+        "lamp_ctrl/lamp_history.c"
+        "lamp_ctrl/lamp_controller.c"
     INCLUDE_DIRS
         "."
         "cfg_store"
@@ -23,6 +28,7 @@ idf_component_register(
         "ble_presence"
         "ota_mgr"
         "web_server"
+        "lamp_ctrl"
     REQUIRES
         nvs_flash
         esp_wifi
@@ -34,6 +40,8 @@ idf_component_register(
         esp_partition
         esp_driver_gpio
         esp_driver_tsens
+        esp_driver_spi
+        esp_driver_rmt
         app_update
         mbedtls
         bt

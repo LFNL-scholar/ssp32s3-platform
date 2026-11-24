@@ -41,6 +41,9 @@ static void settings_set_defaults(cfg_settings_t *s)
     s->led_gpio = CONFIG_SSP_DEFAULT_LED_GPIO;
     s->led_brightness = CONFIG_SSP_DEFAULT_LED_BRIGHTNESS;
     s->led_away_mode = 0;
+    s->led_idle_enabled = true;
+    s->lamp_auto_off_on_away = false;
+    s->lamp_auto_on_on_arrive = false;
     strlcpy(s->ntp_server1, "ntp.aliyun.com", sizeof(s->ntp_server1));
     strlcpy(s->ntp_server2, "cn.pool.ntp.org", sizeof(s->ntp_server2));
     strlcpy(s->timezone, "CST-8", sizeof(s->timezone));
@@ -547,6 +550,16 @@ esp_err_t cfg_store_factory_reset(void)
         nvs_close(h);
     }
     if (nvs_open(NVS_NS_BOND, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_all(h);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    if (nvs_open("lamp_state", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_all(h);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    if (nvs_open("lamp_history", NVS_READWRITE, &h) == ESP_OK) {
         nvs_erase_all(h);
         nvs_commit(h);
         nvs_close(h);

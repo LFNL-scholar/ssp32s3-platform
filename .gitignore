@@ -5,4 +5,8 @@ managed_components/
 dependencies.lock
 web/node_modules/
 web/dist/
+backup_old_lamp/
+data_seed/
+__pycache__/
+*.pyc
 .DS_Store

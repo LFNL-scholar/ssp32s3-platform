@@ -121,6 +121,16 @@ export function Settings() {
                 <input type="range" min="0" max="100" style={{ width: '100%' }} value={cfg.led_brightness} onInput={(e) => setCfg({ ...cfg, led_brightness: Number((e.target as HTMLInputElement).value) })} />
               </div>
               <div class="field">
+                <label class="row" style={{ cursor: 'pointer', color: 'var(--text)' }}>
+                  <input
+                    type="checkbox"
+                    checked={cfg.led_idle_enabled}
+                    onChange={(e) => setCfg({ ...cfg, led_idle_enabled: (e.target as HTMLInputElement).checked })}
+                  />
+                  <span>常态开启 RGB 指示（关闭后平时完全熄灭，仅在配网/配对/OTA 时亮起）</span>
+                </label>
+              </div>
+              <div class="field">
                 <label>全部离开时 LED 状态</label>
                 <select value={cfg.led_away_mode} onChange={(e) => setCfg({ ...cfg, led_away_mode: Number((e.target as HTMLSelectElement).value) })}>
                   <option value={0}>暗红色常亮指示</option>

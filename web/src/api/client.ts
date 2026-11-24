@@ -114,16 +114,61 @@ export interface SystemSettings {
   led_gpio: number;
   led_brightness: number;
   led_away_mode: number;
+  led_idle_enabled: boolean;
   ntp_server1: string;
   ntp_server2: string;
   timezone: string;
+}
+
+export interface LampState {
+  radio_ready: boolean;
+  storage_ready: boolean;
+  sample_loaded: boolean;
+  sample_pulses: number;
+  sample_mhz: number;
+  power_known: boolean;
+  power_on: boolean;
+  power_transmissions: number;
+  last_action: string;
+  last_error: string;
+  learning: {
+    active: boolean;
+    pending_ready: boolean;
+    pending_pulses: number;
+    pending_duration_ms: number;
+  };
+  automation: {
+    auto_off_on_away: boolean;
+    auto_on_on_arrive: boolean;
+  };
+  history: {
+    time_synced: boolean;
+    ready: boolean;
+    recording: boolean;
+    now: number;
+    oldest: number;
+    error: string;
+  };
+}
+
+export interface LampHistoryResp {
+  time_synced: boolean;
+  ready: boolean;
+  recording: boolean;
+  now: number;
+  oldest: number;
+  error: string;
+  incomplete: boolean;
+  records: [number, number, number, number][];
 }
 
 export type WsMessage =
   | TelemetryMsg
   | { type: 'presence_tick'; persons: PersonState[] }
   | { type: 'presence_event'; event: string; person_id: number; person_name: string; device: string; rssi: number; epoch: number }
-  | { type: 'pair_result'; status: 'success' | 'timeout' | 'cancelled' | 'error'; device_id?: number; label?: string; reason?: string };
+  | { type: 'pair_result'; status: 'success' | 'timeout' | 'cancelled' | 'error'; device_id?: number; label?: string; reason?: string }
+  | ({ type: 'lamp_state' } & LampState)
+  | { type: 'lamp_learn'; status: 'listening' | 'captured' | 'timeout' | 'error'; pulses?: number; duration_ms?: number; error?: string };
 
 let onUnauthorized: (() => void) | null = null;
 export function setUnauthorizedHandler(fn: () => void) {
@@ -184,6 +229,17 @@ export const api = {
 
   logs: (limit = 50, offset = 0) => req<{ total: number; logs: PresenceLogEntry[] }>(`/api/presence/logs?limit=${limit}&offset=${offset}`),
   clearLogs: () => req<{ ok: boolean }>('/api/presence/logs', { method: 'DELETE' }),
+
+  lampState: () => req<LampState>('/api/lamp/state'),
+  lampAction: (action: 'on' | 'off' | 'calibrate_on' | 'calibrate_off') =>
+    req<LampState & { ok: boolean; transmitted?: boolean }>('/api/lamp/action', { method: 'POST', body: JSON.stringify({ action }) }),
+  lampHistory: (from: number, to: number) => req<LampHistoryResp>(`/api/lamp/history?from=${from}&to=${to}`),
+  lampAutomation: (auto_off_on_away: boolean, auto_on_on_arrive: boolean) =>
+    req<LampState & { ok: boolean }>('/api/lamp/automation', { method: 'PUT', body: JSON.stringify({ auto_off_on_away, auto_on_on_arrive }) }),
+  lampLearnStart: () => req<{ ok: boolean }>('/api/lamp/learn/start', { method: 'POST' }),
+  lampLearnTest: () => req<{ ok: boolean }>('/api/lamp/learn/test', { method: 'POST' }),
+  lampLearnSave: () => req<LampState & { ok: boolean }>('/api/lamp/learn/save', { method: 'POST' }),
+  lampLearnCancel: () => req<{ ok: boolean }>('/api/lamp/learn/cancel', { method: 'POST' }),
 };
 
 type Listener = (msg: WsMessage) => void;

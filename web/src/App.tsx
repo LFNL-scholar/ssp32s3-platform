@@ -4,9 +4,10 @@ import { SetupWizard } from './pages/SetupWizard';
 import { Login } from './pages/Login';
 import { Dashboard } from './pages/Dashboard';
 import { Presence } from './pages/Presence';
+import { Lamp } from './pages/Lamp';
 import { Settings } from './pages/Settings';
 
-type Tab = 'dashboard' | 'presence' | 'settings';
+type Tab = 'dashboard' | 'lamp' | 'presence' | 'settings';
 
 export function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
@@ -61,6 +62,7 @@ export function App() {
         </div>
         <nav class="nav-links">
           <button class={`tab ${tab === 'dashboard' ? 'active' : ''}`} onClick={() => setTab('dashboard')}>硬件仪表盘</button>
+          <button class={`tab ${tab === 'lamp' ? 'active' : ''}`} onClick={() => setTab('lamp')}>台灯控制</button>
           <button class={`tab ${tab === 'presence' ? 'active' : ''}`} onClick={() => setTab('presence')}>蓝牙在家检测</button>
           <button class={`tab ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>系统设置</button>
           <button class="tab" onClick={async () => { await api.logout(); wsClient.stop(); refreshAuth(); }}>退出</button>
@@ -68,6 +70,7 @@ export function App() {
       </header>
       <main class="container">
         {tab === 'dashboard' && <Dashboard />}
+        {tab === 'lamp' && <Lamp />}
         {tab === 'presence' && <Presence />}
         {tab === 'settings' && <Settings />}
       </main>

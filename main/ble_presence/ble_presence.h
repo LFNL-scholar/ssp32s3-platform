@@ -57,8 +57,10 @@ typedef struct {
 
 // Callback invoked when presence_event or pair_result JSON is emitted for WS broadcast
 typedef void (*ble_ws_event_cb_t)(const char *json_str);
+typedef void (*ble_home_count_cb_t)(int prev_home, int cur_home);
 
 void ble_presence_set_ws_cb(ble_ws_event_cb_t cb);
+void ble_presence_set_home_count_cb(ble_home_count_cb_t cb);
 esp_err_t ble_presence_init(void);
 
 // Pause/resume scanning (used by Wi-Fi scan and OTA)

@@ -22,6 +22,8 @@
 #include "presence_log.h"
 #include "led_ctrl.h"
 #include "ota_mgr.h"
+#include "lamp_controller.h"
+#include "lamp_history.h"
 
 static const char *TAG = "web_server";
 
@@ -469,6 +471,7 @@ static esp_err_t handle_settings_get(httpd_req_t *req)
     cJSON_AddNumberToObject(o, "led_gpio", cfg.led_gpio);
     cJSON_AddNumberToObject(o, "led_brightness", cfg.led_brightness);
     cJSON_AddNumberToObject(o, "led_away_mode", cfg.led_away_mode);
+    cJSON_AddBoolToObject(o, "led_idle_enabled", cfg.led_idle_enabled);
     cJSON_AddStringToObject(o, "ntp_server1", cfg.ntp_server1);
     cJSON_AddStringToObject(o, "ntp_server2", cfg.ntp_server2);
     cJSON_AddStringToObject(o, "timezone", cfg.timezone);
@@ -498,6 +501,9 @@ static esp_err_t handle_settings_put(httpd_req_t *req)
     if (cJSON_IsNumber((v = cJSON_GetObjectItem(body, "led_away_mode")))) {
         cfg.led_away_mode = v->valuedouble ? 1 : 0;
     }
+    if (cJSON_IsBool((v = cJSON_GetObjectItem(body, "led_idle_enabled")))) {
+        cfg.led_idle_enabled = cJSON_IsTrue(v);
+    }
     if (cJSON_IsString((v = cJSON_GetObjectItem(body, "ntp_server1"))) && v->valuestring[0]) {
         strlcpy(cfg.ntp_server1, v->valuestring, sizeof(cfg.ntp_server1));
     }
@@ -514,7 +520,7 @@ static esp_err_t handle_settings_put(httpd_req_t *req)
         return send_err(req, "400 Bad Request", "参数无效（注意 GPIO 35/36/37 不可用于 LED）");
     }
 
-    led_ctrl_apply_settings(cfg.led_gpio, cfg.led_brightness, cfg.led_away_mode);
+    led_ctrl_apply_settings(cfg.led_gpio, cfg.led_brightness, cfg.led_away_mode, cfg.led_idle_enabled);
     wifi_mgr_apply_settings();
 
     cJSON *o = cJSON_CreateObject();
@@ -884,6 +890,170 @@ static esp_err_t handle_presence_logs_delete(httpd_req_t *req)
     return send_json(req, "200 OK", o);
 }
 
+// ---------- Lamp (433MHz CC1101) Handlers ----------
+
+static esp_err_t handle_lamp_state(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    return send_json(req, "200 OK", lamp_controller_build_state_json());
+}
+
+static esp_err_t handle_lamp_action(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *body = read_json_body(req, 256);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    const cJSON *act = cJSON_GetObjectItem(body, "action");
+    if (!cJSON_IsString(act)) {
+        cJSON_Delete(body);
+        return send_err(req, "400 Bad Request", "缺少 action 字段");
+    }
+    char action[24];
+    strlcpy(action, act->valuestring, sizeof(action));
+    cJSON_Delete(body);
+
+    esp_err_t err = ESP_ERR_INVALID_ARG;
+    bool transmitted = false;
+    if (strcmp(action, "on") == 0 || strcmp(action, "off") == 0) {
+        err = lamp_controller_set_power(strcmp(action, "on") == 0, false, &transmitted);
+    } else if (strcmp(action, "calibrate_on") == 0 || strcmp(action, "calibrate_off") == 0) {
+        err = lamp_controller_sync_power(strcmp(action, "calibrate_on") == 0);
+    } else {
+        return send_err(req, "400 Bad Request", "未知的 action");
+    }
+
+    if (err != ESP_OK) {
+        return send_err(req, "409 Conflict", "操作失败（请检查射频模块、信号样本或先校准状态）");
+    }
+    cJSON *o = lamp_controller_build_state_json();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddBoolToObject(o, "transmitted", transmitted);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t lamp_history_chunk_writer(void *ctx, const char *data, size_t len)
+{
+    return httpd_resp_send_chunk((httpd_req_t *)ctx, data, (ssize_t)len);
+}
+
+static esp_err_t handle_lamp_history(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    char qbuf[96], from_s[24] = {0}, to_s[24] = {0};
+    if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) != ESP_OK ||
+        httpd_query_key_value(qbuf, "from", from_s, sizeof(from_s)) != ESP_OK ||
+        httpd_query_key_value(qbuf, "to", to_s, sizeof(to_s)) != ESP_OK) {
+        return send_err(req, "400 Bad Request", "缺少 from/to 参数");
+    }
+    int64_t from = strtoll(from_s, NULL, 10);
+    int64_t to = strtoll(to_s, NULL, 10);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t err = lamp_history_write_json(from, to, lamp_history_chunk_writer, req);
+    if (err == ESP_ERR_INVALID_ARG) {
+        return send_err(req, "400 Bad Request", "时间范围无效（需按北京时间零点对齐且不超过 31 天）");
+    }
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t handle_lamp_automation(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *body = read_json_body(req, 256);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    cfg_settings_t cfg;
+    cfg_settings_get(&cfg);
+    const cJSON *v;
+    if (cJSON_IsBool((v = cJSON_GetObjectItem(body, "auto_off_on_away")))) {
+        cfg.lamp_auto_off_on_away = cJSON_IsTrue(v);
+    }
+    if (cJSON_IsBool((v = cJSON_GetObjectItem(body, "auto_on_on_arrive")))) {
+        cfg.lamp_auto_on_on_arrive = cJSON_IsTrue(v);
+    }
+    cJSON_Delete(body);
+
+    esp_err_t err = cfg_settings_set(&cfg);
+    if (err != ESP_OK) return send_err(req, "500 Internal Server Error", "保存联动设置失败");
+
+    cJSON *o = lamp_controller_build_state_json();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_lamp_learn_start(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    esp_err_t err = lamp_controller_learn_start();
+    if (err != ESP_OK) return send_err(req, "409 Conflict", "无法启动学习（射频未就绪或正在学习中）");
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_lamp_learn_test(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    esp_err_t err = lamp_controller_learn_test();
+    if (err != ESP_OK) return send_err(req, "409 Conflict", "试播失败（无待保存信号或射频忙）");
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_lamp_learn_save(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    esp_err_t err = lamp_controller_learn_save();
+    if (err != ESP_OK) return send_err(req, "409 Conflict", "保存信号失败");
+    cJSON *o = lamp_controller_build_state_json();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_lamp_learn_cancel(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    lamp_controller_learn_cancel();
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_lamp_sample_upload(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    if (req->content_len < 44 || req->content_len > 36000) {
+        return send_err(req, "400 Bad Request", "样本文件大小无效");
+    }
+    uint8_t *buf = malloc((size_t)req->content_len);
+    if (!buf) return send_err(req, "500 Internal Server Error", "内存不足");
+
+    int total = 0;
+    while (total < req->content_len) {
+        int r = httpd_req_recv(req, (char *)buf + total, req->content_len - total);
+        if (r <= 0) {
+            if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+            free(buf);
+            return send_err(req, "400 Bad Request", "传输中断");
+        }
+        total += r;
+    }
+
+    esp_err_t err = lamp_controller_import_sample(buf, (size_t)total);
+    free(buf);
+    if (err != ESP_OK) {
+        return send_err(req, "400 Bad Request", "无效的 .rf 样本文件或 CRC32 校验失败");
+    }
+
+    cJSON *o = lamp_controller_build_state_json();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
 // ---------- WebSocket Handler ----------
 
 #ifdef CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
@@ -1114,7 +1284,7 @@ esp_err_t web_server_start(void)
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port = 80;
-    cfg.max_uri_handlers = 36;
+    cfg.max_uri_handlers = 48;
     cfg.max_open_sockets = 10;
     cfg.lru_purge_enable = true;
     cfg.uri_match_fn = httpd_uri_match_wildcard;
@@ -1157,6 +1327,15 @@ esp_err_t web_server_start(void)
         { .uri = "/api/presence/scan",         .method = HTTP_GET,    .handler = handle_presence_scan },
         { .uri = "/api/presence/logs",         .method = HTTP_GET,    .handler = handle_presence_logs_get },
         { .uri = "/api/presence/logs",         .method = HTTP_DELETE, .handler = handle_presence_logs_delete },
+        { .uri = "/api/lamp/state",            .method = HTTP_GET,    .handler = handle_lamp_state },
+        { .uri = "/api/lamp/action",           .method = HTTP_POST,   .handler = handle_lamp_action },
+        { .uri = "/api/lamp/history",          .method = HTTP_GET,    .handler = handle_lamp_history },
+        { .uri = "/api/lamp/automation",       .method = HTTP_PUT,    .handler = handle_lamp_automation },
+        { .uri = "/api/lamp/learn/start",      .method = HTTP_POST,   .handler = handle_lamp_learn_start },
+        { .uri = "/api/lamp/learn/test",       .method = HTTP_POST,   .handler = handle_lamp_learn_test },
+        { .uri = "/api/lamp/learn/save",       .method = HTTP_POST,   .handler = handle_lamp_learn_save },
+        { .uri = "/api/lamp/learn/cancel",     .method = HTTP_POST,   .handler = handle_lamp_learn_cancel },
+        { .uri = "/api/lamp/sample/upload",    .method = HTTP_POST,   .handler = handle_lamp_sample_upload },
     };
 
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {

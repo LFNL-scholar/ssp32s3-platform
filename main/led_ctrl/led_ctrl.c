@@ -12,8 +12,9 @@ static const char *TAG = "led_ctrl";
 static SemaphoreHandle_t s_mutex = NULL;
 static led_strip_handle_t s_strip = NULL;
 static int s_gpio = -1;
-static uint8_t s_brightness = 20;
+static uint8_t s_brightness = 10;
 static uint8_t s_away_mode = 0; // 0 = dim red, 1 = off
+static bool s_idle_enabled = true;
 static uint32_t s_flags = 0;
 static int s_home_count = 0;
 
@@ -103,11 +104,13 @@ static void led_task(void *arg)
             g = (uint8_t)(40 * val);
             b = (uint8_t)(255 * val);
         } else {
-            // Presence indication
-            if (home_cnt > 0) {
-                r = 0; g = 255; b = 20;
-            } else if (away_mode == 0) {
-                r = 60; g = 0; b = 0; // dim red
+            // Presence indication (can be turned completely off in Settings)
+            if (s_idle_enabled) {
+                if (home_cnt > 0) {
+                    r = 0; g = 255; b = 20;
+                } else if (away_mode == 0) {
+                    r = 60; g = 0; b = 0; // dim red
+                }
             }
         }
 
@@ -119,7 +122,7 @@ static void led_task(void *arg)
     }
 }
 
-esp_err_t led_ctrl_init(int gpio_num, uint8_t brightness, uint8_t away_mode)
+esp_err_t led_ctrl_init(int gpio_num, uint8_t brightness, uint8_t away_mode, bool idle_enabled)
 {
     if (!s_mutex) {
         s_mutex = xSemaphoreCreateMutex();
@@ -127,8 +130,9 @@ esp_err_t led_ctrl_init(int gpio_num, uint8_t brightness, uint8_t away_mode)
     }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
-    s_brightness = (brightness <= 100) ? brightness : 20;
+    s_brightness = (brightness <= 100) ? brightness : 10;
     s_away_mode = away_mode;
+    s_idle_enabled = idle_enabled;
     esp_err_t err = create_strip(gpio_num);
     xSemaphoreGive(s_mutex);
 
@@ -158,7 +162,7 @@ void led_ctrl_set_home_count(int count)
     xSemaphoreGive(s_mutex);
 }
 
-esp_err_t led_ctrl_apply_settings(int gpio_num, uint8_t brightness, uint8_t away_mode)
+esp_err_t led_ctrl_apply_settings(int gpio_num, uint8_t brightness, uint8_t away_mode, bool idle_enabled)
 {
     if (!s_mutex) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_mutex, portMAX_DELAY);
@@ -167,8 +171,9 @@ esp_err_t led_ctrl_apply_settings(int gpio_num, uint8_t brightness, uint8_t away
         err = create_strip(gpio_num);
     }
     if (err == ESP_OK) {
-        s_brightness = (brightness <= 100) ? brightness : 20;
+        s_brightness = (brightness <= 100) ? brightness : 10;
         s_away_mode = away_mode;
+        s_idle_enabled = idle_enabled;
     }
     xSemaphoreGive(s_mutex);
     return err;

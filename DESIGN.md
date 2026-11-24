@@ -466,3 +466,87 @@ stateDiagram-v2
   1. 首次配网强制设置管理员密码；未登录访问 `/api/*` 与 `/ws` 返回 `401`。
   2. 进出事件带准确 CST-8 时间戳写入 Flash，断电重启后历史日志不丢失，超过 1000 条自动覆盖最旧记录。
   3. 通过网页上传新版本 `.bin` 固件成功重启切换至另一 OTA 槽位，新版本版本号在仪表盘可见；模拟启动异常时自动回滚至旧槽位。
+
+---
+
+## 9. 433MHz 台灯控制迁移方案（合并自 `light-control`）
+
+> 本节记录将旧项目 `light-control`（ESP32-S3 + CC1101 433.92MHz OOK 台灯遥控）完整迁入 `ssp32s3-platform` 的设计规格。**硬件接线完全不变**。
+
+### 9.1 硬件接线与外设共存
+
+| 外设 | 引脚（GPIO 编号） | 通道 / 说明 |
+| --- | --- | --- |
+| CC1101 SPI | SCK=`12`, MISO=`13`, MOSI=`11`, CS=`10` | 软件片选，SPI2_HOST，等待 MISO (CHIP_RDYn) 拉低 |
+| CC1101 GDO0 | `GPIO4` | RMT TX（DMA，1μs 分辨率）发射 OOK 脉冲 |
+| CC1101 GDO2 | `GPIO5` | RMT RX（DMA，1μs 分辨率）录制遥控脉冲 |
+| 板载 WS2812B | `GPIO48` | RMT TX（非 DMA），与 CC1101 RMT 通道无冲突 |
+| BOOT 恢复出厂键 | `GPIO0` | 低电平有效，长按 ≥ 5s |
+| OPI PSRAM（禁用） | `GPIO35 / 36 / 37` | 严禁复用 |
+
+- **串口控制台**：与旧项目保持一致，仅启用左侧**原生 USB Serial/JTAG**（`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`、`CONFIG_ESP_CONSOLE_SECONDARY_NONE=y`）。
+- **板载 RGB LED 策略调整**：
+  - 默认亮度由 `20%` 调整为 **`10%`**。
+  - 在系统设置中新增 **`led_idle_enabled`**（常态指示开关，默认开启；关闭后在非配网/非配对/非 OTA/非恢复出厂的常态下完全熄灭 GPIO48 RGB 灯，兼顾桌面/床头防眩光需求）。
+
+### 9.2 旧样本备份与迁移流程
+
+旧项目 `light-control` 使用 4MB 分区表，其中已学习的 `power_sample_1.rf` 及用灯历史文件存放在 SPIFFS 分区（偏移 `0x190000`，大小 `0x270000`）。**在烧录新平台固件前，必须先只读备份该分区**：
+
+1. 插入开发板（左侧原生 USB 口），运行备份提取脚本：
+   ```bash
+   python3 scripts/backup_old_lamp.py
+   ```
+2. 脚本通过 `esptool read_flash 0x190000 0x270000` 只读导出旧 SPIFFS 镜像至 `backup_old_lamp/old_spiffs.bin`（不修改板子任何数据），解析并 CRC32 校验 `power_sample_1.rf`（及已有每日用灯历史文件），拷贝至 `data_seed/`。
+3. 新平台统一使用 `/data` LittleFS 分区存放台灯波形（`/data/power_sample_1.rf`）与用灯历史日志（兼容原 32 字节定长 CRC32 每日日志文件格式），无需额外 SPIFFS 分区；若存在 `data_seed/`，可打包为初始 `data` 镜像或在首次烧录后通过网页/工具导入。
+
+### 9.3 固件新增模块（`main/lamp_ctrl/`）
+
+- `cc1101.c/h`：移植自 `light-control`，SPI 驱动、433.92 MHz / 325 kHz / 4.8 kBaud OOK 配置读回与 RX/TX 状态确认。
+- `waveform.c/h`：移植自 `light-control`，1μs 分辨率 RMT DMA 收发（缓冲区优先分配在 PSRAM 或 DMA 内部内存，保持 4096 symbol 容量）。
+- `rf_storage.c/h`：将原 `storage.c` 改为直接读写已挂载的 `/data/<name>.rf`（LittleFS），保持 `MAGIC = 0x49444631` 与 CRC32 格式 100% 兼容旧样本。
+- `lamp_history.c/h`：移植自 `light-control/main/history.c`，沿用 `/data` 路径与 32 字节定长 CRC32 每日记录格式、12 个月自动清理与 NVS 检查点机制，并新增 `HISTORY_AUTO = 4`（蓝牙在家检测自动触发）。与 `wifi_mgr` 的 SNTP 对时同步调用 `lamp_history_clock_synced()`。
+- `lamp_controller.c/h`：
+  - 开关控制（单一切换命令 + 推算状态 + 重启后默认未校准 `power_known = false` + 网页手动校准）。
+  - **网页信号学习流程**：
+    1. `start`：进入学习模式，异步调用 `waveform_capture`（超时 10s，idle 20ms，filter 1μs）录制到临时缓冲 `pending_wave`，通过 WebSocket 推送 `lamp_learn` 结果（脉冲数、时长、频率）。
+    2. `test`：试播 `pending_wave` 验证台灯是否实际开关。
+    3. `save`：写入 `/data/power_sample_1.rf` 并设为当前生效样本。
+    4. `cancel`：放弃临时样本。
+- **与蓝牙在家检测的可选联动**：
+  - NVS 设置项：`lamp_auto_off_on_away`（最后一人离开自动关灯，默认 `false`）、`lamp_auto_on_on_arrive`（第一人到家自动开灯，默认 `false`）。
+  - **安全守卫**：仅当 `power_known == true`（已校准）且 `sample_loaded == true` 时才触发；若当前推算状态已与目标一致则不发射；触发时同时记录到 `lamp_history`（`HISTORY_AUTO`）和 `presence_log` 并推送 WS 事件。
+
+### 9.4 新增 REST API 与 WebSocket 消息
+
+| 方法与路径 | 鉴权 | 说明 |
+| --- | --- | --- |
+| `GET /api/lamp/state` | 需鉴权 | 返回 `radio_ready`、`sample_loaded`、`power_known`、`power_on`、`power_transmissions`、`last_action`、`last_error`、`history_status`、`automation`、`learning` 状态 |
+| `POST /api/lamp/action` | 需鉴权 | `{action: "on" \| "off" \| "calibrate_on" \| "calibrate_off"}` 执行开/关或状态校准 |
+| `GET /api/lamp/history` | 需鉴权 | `?from=<utc_s>&to=<utc_s>`（最多 31 天，按北京时间零点对齐）返回用灯区间数组 |
+| `PUT /api/lamp/automation` | 需鉴权 | `{auto_off_on_away: bool, auto_on_on_arrive: bool}` 更新联动开关 |
+| `POST /api/lamp/learn/start` | 需鉴权 | 开始 10 秒 433MHz 信号录制（异步，结果经 WS `lamp_learn` 推送） |
+| `POST /api/lamp/learn/test` | 需鉴权 | 试播刚录制的临时信号 |
+| `POST /api/lamp/learn/save` | 需鉴权 | 保存临时信号覆盖 `power_sample_1.rf` |
+| `POST /api/lamp/learn/cancel` | 需鉴权 | 取消学习并清空临时缓冲 |
+
+- **WebSocket 新增推送**：
+  - `lamp_state`：开关状态、校准状态、联动触发或学习结果变化时即时广播。
+  - `lamp_learn`：`{type: "lamp_learn", status: "listening" | "captured" | "timeout" | "error", pulses?: number, duration_ms?: number, error?: string}`。
+
+### 9.5 前端「台灯」页（`web/src/pages/Lamp.tsx`）
+
+采用新平台统一的 Preact + 深色风格重写（不引入 Three.js，保持整站 gzip 体积在 ~25KB 左右）：
+
+1. **主控与校准区**：大号开/关切换按钮、当前推算状态徽章；未校准或与实物不一致时可一键点击「校准：当前已开灯 / 当前已关灯」。
+2. **遥控信号学习向导**：显示当前样本状态（已加载脉冲数/频率）；支持「开始录制（10s 倒计时）→ 试播验证 → 保存生效」三步向导。
+3. **蓝牙在家联动开关**：独立开关控制「最后一人离开自动关灯」与「第一人到家自动开灯」（默认关闭，附带“需已校准后生效”提示）。
+4. **用灯统计与历史**：复用原 `stats.js` 的北京时间日历与区间统计逻辑（TypeScript 重写）：今日 24 小时时间轴、开关与校准事件列表、周/月每日用灯时长柱状图、总时长与有效记录日均时长。
+
+### 9.6 里程碑 M5 验收标准
+
+1. `scripts/backup_old_lamp.py` 成功从旧板子只读备份并 CRC32 校验提取 `power_sample_1.rf`。
+2. 新固件集成 CC1101 + RMT DMA + LED GPIO48 + NimBLE + Wi-Fi 无通道冲突、编译零警告，且左侧原生 USB 正常输出日志。
+3. 网页「台灯」页可加载旧样本或通过网页学习新样本，实物可靠开关台灯，状态校准与日/周/月用灯统计正常持久化。
+4. 开启联动后，仅在已校准状态下于最后一人离开/第一人到家时自动关灯/开灯；常态关闭 LED 选项生效。
+

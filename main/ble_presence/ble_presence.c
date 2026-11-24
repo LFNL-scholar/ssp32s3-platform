@@ -65,6 +65,7 @@ typedef struct {
 
 static SemaphoreHandle_t s_mutex = NULL;
 static ble_ws_event_cb_t s_ws_cb = NULL;
+static ble_home_count_cb_t s_home_cb = NULL;
 
 static uint8_t s_own_addr_type = BLE_OWN_ADDR_PUBLIC;
 static bool s_host_synced = false;
@@ -541,6 +542,7 @@ static void nimble_host_task(void *param)
 
 static void presence_eval_task(void *arg)
 {
+    int prev_home_persons = 0;
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
         int64_t ts = now_ms();
@@ -634,13 +636,24 @@ static void presence_eval_task(void *arg)
         }
 
         led_ctrl_set_home_count(home_persons);
+        int old_home = prev_home_persons;
+        prev_home_persons = home_persons;
         xSemaphoreGive(s_mutex);
+
+        if (s_home_cb && old_home != home_persons) {
+            s_home_cb(old_home, home_persons);
+        }
     }
 }
 
 void ble_presence_set_ws_cb(ble_ws_event_cb_t cb)
 {
     s_ws_cb = cb;
+}
+
+void ble_presence_set_home_count_cb(ble_home_count_cb_t cb)
+{
+    s_home_cb = cb;
 }
 
 esp_err_t ble_presence_init(void)

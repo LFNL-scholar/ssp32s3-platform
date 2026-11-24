@@ -12,7 +12,7 @@ menu "SSP32S3 Platform Configuration"
     config SSP_DEFAULT_LED_BRIGHTNESS
         int "Default RGB LED brightness (%)"
         range 0 100
-        default 20
+        default 10
 
     config SSP_BOOT_BTN_GPIO
         int "Factory reset button GPIO (active low)"
