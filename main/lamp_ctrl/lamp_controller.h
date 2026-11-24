@@ -36,6 +36,7 @@ cJSON *lamp_controller_build_state_json(void);
 
 esp_err_t lamp_controller_sync_power(bool on);
 esp_err_t lamp_controller_set_power(bool on, bool is_auto, bool *transmitted);
+esp_err_t lamp_controller_toggle(bool *transmitted);
 
 // Web RF learning workflow
 esp_err_t lamp_controller_learn_start(void);

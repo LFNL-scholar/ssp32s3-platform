@@ -63,6 +63,11 @@ typedef struct {
     uint16_t away_timeout_s;  // default 120
 } cfg_device_t;
 
+typedef struct {
+    bool enabled;
+    char token[33];           // 32-char hex persistent API key for Siri Shortcuts
+} cfg_siri_t;
+
 esp_err_t cfg_store_init(void);
 
 // SoftAP deterministic SSID & password
@@ -95,6 +100,12 @@ bool cfg_device_get(uint8_t id, cfg_device_t *out);
 esp_err_t cfg_device_add(const cfg_device_t *in, cfg_device_t *out);
 esp_err_t cfg_device_update(uint8_t id, const char *label, int8_t enter_rssi, int8_t exit_rssi, uint16_t away_timeout_s);
 esp_err_t cfg_device_delete(uint8_t id);
+
+// Siri Shortcuts persistent API token
+void cfg_siri_get(cfg_siri_t *out);
+esp_err_t cfg_siri_set_enabled(bool enabled);
+esp_err_t cfg_siri_regenerate_token(cfg_siri_t *out);
+bool cfg_siri_verify_token(const char *candidate);
 
 // Factory reset (clears ssp_cfg + nimble_bond)
 esp_err_t cfg_store_factory_reset(void);

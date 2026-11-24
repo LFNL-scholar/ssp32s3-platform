@@ -22,6 +22,7 @@ static const char *TAG = "cfg_store";
 #define KEY_SETTINGS "settings"
 #define KEY_PERSONS  "persons"
 #define KEY_DEVICES  "devices"
+#define KEY_SIRI     "siri"
 
 typedef struct {
     cfg_wifi_t wifi;
@@ -29,6 +30,7 @@ typedef struct {
     cfg_settings_t settings;
     cfg_person_t persons[CFG_MAX_PERSONS];
     cfg_device_t devices[CFG_MAX_DEVICES];
+    cfg_siri_t siri;
 } cfg_cache_t;
 
 static cfg_cache_t s_cache;
@@ -47,6 +49,16 @@ static void settings_set_defaults(cfg_settings_t *s)
     strlcpy(s->ntp_server1, "ntp.aliyun.com", sizeof(s->ntp_server1));
     strlcpy(s->ntp_server2, "cn.pool.ntp.org", sizeof(s->ntp_server2));
     strlcpy(s->timezone, "CST-8", sizeof(s->timezone));
+}
+
+static void generate_siri_token(char out[33])
+{
+    uint8_t rnd[16];
+    esp_fill_random(rnd, sizeof(rnd));
+    for (int i = 0; i < 16; i++) {
+        snprintf(&out[i * 2], 3, "%02x", rnd[i]);
+    }
+    out[32] = '\0';
 }
 
 static esp_err_t nvs_write_blob(const char *key, const void *data, size_t len)
@@ -101,6 +113,13 @@ esp_err_t cfg_store_init(void)
     }
     if (nvs_read_blob_exact(KEY_DEVICES, s_cache.devices, sizeof(s_cache.devices)) != ESP_OK) {
         memset(s_cache.devices, 0, sizeof(s_cache.devices));
+    }
+    if (nvs_read_blob_exact(KEY_SIRI, &s_cache.siri, sizeof(s_cache.siri)) != ESP_OK ||
+        strlen(s_cache.siri.token) != 32) {
+        memset(&s_cache.siri, 0, sizeof(s_cache.siri));
+        s_cache.siri.enabled = true;
+        generate_siri_token(s_cache.siri.token);
+        nvs_write_blob(KEY_SIRI, &s_cache.siri, sizeof(s_cache.siri));
     }
 
     xSemaphoreGive(s_mutex);
@@ -538,6 +557,60 @@ esp_err_t cfg_device_delete(uint8_t id)
     esp_err_t err = nvs_write_blob(KEY_DEVICES, s_cache.devices, sizeof(s_cache.devices));
     xSemaphoreGive(s_mutex);
     return err;
+}
+
+void cfg_siri_get(cfg_siri_t *out)
+{
+    if (!out) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    *out = s_cache.siri;
+    xSemaphoreGive(s_mutex);
+}
+
+esp_err_t cfg_siri_set_enabled(bool enabled)
+{
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    cfg_siri_t next = s_cache.siri;
+    next.enabled = enabled;
+    if (strlen(next.token) != 32) {
+        generate_siri_token(next.token);
+    }
+    esp_err_t err = nvs_write_blob(KEY_SIRI, &next, sizeof(next));
+    if (err == ESP_OK) {
+        s_cache.siri = next;
+    }
+    xSemaphoreGive(s_mutex);
+    return err;
+}
+
+esp_err_t cfg_siri_regenerate_token(cfg_siri_t *out)
+{
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    cfg_siri_t next = s_cache.siri;
+    generate_siri_token(next.token);
+    esp_err_t err = nvs_write_blob(KEY_SIRI, &next, sizeof(next));
+    if (err == ESP_OK) {
+        s_cache.siri = next;
+        if (out) *out = next;
+    }
+    xSemaphoreGive(s_mutex);
+    return err;
+}
+
+bool cfg_siri_verify_token(const char *candidate)
+{
+    if (!candidate || strlen(candidate) != 32) return false;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (!s_cache.siri.enabled || strlen(s_cache.siri.token) != 32) {
+        xSemaphoreGive(s_mutex);
+        return false;
+    }
+    uint8_t diff = 0;
+    for (int i = 0; i < 32; i++) {
+        diff |= (uint8_t)(candidate[i] ^ s_cache.siri.token[i]);
+    }
+    xSemaphoreGive(s_mutex);
+    return diff == 0;
 }
 
 esp_err_t cfg_store_factory_reset(void)

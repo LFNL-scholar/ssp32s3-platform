@@ -926,6 +926,8 @@ static esp_err_t handle_lamp_action(httpd_req_t *req)
     bool transmitted = false;
     if (strcmp(action, "on") == 0 || strcmp(action, "off") == 0) {
         err = lamp_controller_set_power(strcmp(action, "on") == 0, false, &transmitted);
+    } else if (strcmp(action, "toggle") == 0) {
+        err = lamp_controller_toggle(&transmitted);
     } else if (strcmp(action, "calibrate_on") == 0 || strcmp(action, "calibrate_off") == 0) {
         err = lamp_controller_sync_power(strcmp(action, "calibrate_on") == 0);
     } else {
@@ -1056,6 +1058,118 @@ static esp_err_t handle_lamp_sample_upload(httpd_req_t *req)
     free(buf);
     if (err != ESP_OK) {
         return send_err(req, "400 Bad Request", "无效的 .rf 样本文件或 CRC32 校验失败");
+    }
+
+    cJSON *o = lamp_controller_build_state_json();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static bool extract_siri_token(httpd_req_t *req, const char *qbuf, char *out, size_t out_len)
+{
+    out[0] = '\0';
+    if (qbuf && qbuf[0] != '\0') {
+        if (httpd_query_key_value(qbuf, "token", out, out_len) == ESP_OK && out[0] != '\0') {
+            return true;
+        }
+    }
+    if (httpd_req_get_hdr_value_str(req, "X-API-Key", out, out_len) == ESP_OK && out[0] != '\0') {
+        return true;
+    }
+    char auth_hdr[96] = {0};
+    if (httpd_req_get_hdr_value_str(req, "Authorization", auth_hdr, sizeof(auth_hdr)) == ESP_OK) {
+        if (strncasecmp(auth_hdr, "Bearer ", 7) == 0 && auth_hdr[7] != '\0') {
+            strlcpy(out, auth_hdr + 7, out_len);
+            return true;
+        }
+    }
+    return false;
+}
+
+static esp_err_t handle_lamp_siri(httpd_req_t *req)
+{
+    char qbuf[192] = {0};
+    httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf));
+
+    char token[64] = {0};
+    if (!extract_siri_token(req, qbuf, token, sizeof(token)) || !cfg_siri_verify_token(token)) {
+        return send_err(req, "401 Unauthorized", "Siri 快捷指令未启用或密钥无效");
+    }
+
+    char action[24] = "toggle";
+    if (qbuf[0] != '\0') {
+        char qa[24] = {0};
+        if (httpd_query_key_value(qbuf, "action", qa, sizeof(qa)) == ESP_OK && qa[0] != '\0') {
+            strlcpy(action, qa, sizeof(action));
+        }
+    }
+
+    esp_err_t err = ESP_OK;
+    bool transmitted = false;
+    const char *msg = "操作成功";
+
+    if (strcmp(action, "on") == 0) {
+        err = lamp_controller_set_power(true, false, &transmitted);
+        msg = transmitted ? "台灯已打开" : "台灯已经是开启状态";
+    } else if (strcmp(action, "off") == 0) {
+        err = lamp_controller_set_power(false, false, &transmitted);
+        msg = transmitted ? "台灯已关闭" : "台灯已经是关闭状态";
+    } else if (strcmp(action, "toggle") == 0) {
+        err = lamp_controller_toggle(&transmitted);
+        msg = "台灯已切换";
+    } else if (strcmp(action, "status") == 0) {
+        msg = "查询成功";
+    } else {
+        return send_err(req, "400 Bad Request", "不支持的 action（可选 on / off / toggle / status）");
+    }
+
+    if (err != ESP_OK) {
+        lamp_status_t st;
+        lamp_controller_status(&st);
+        if (!st.power_known && (strcmp(action, "on") == 0 || strcmp(action, "off") == 0)) {
+            return send_err(req, "409 Conflict", "台灯未校准，请先在网页校准一次，或使用 action=toggle 直接切换");
+        }
+        return send_err(req, "409 Conflict", "控制失败，请检查射频模块与遥控样本");
+    }
+
+    lamp_status_t st;
+    lamp_controller_status(&st);
+    if (strcmp(action, "toggle") == 0 && st.power_known) {
+        msg = st.power_on ? "台灯已打开" : "台灯已关闭";
+    } else if (strcmp(action, "status") == 0) {
+        msg = !st.power_known ? "台灯状态未校准" : (st.power_on ? "台灯当前已打开" : "台灯当前已关闭");
+    }
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddStringToObject(o, "action", action);
+    cJSON_AddBoolToObject(o, "transmitted", transmitted);
+    cJSON_AddBoolToObject(o, "power_known", st.power_known);
+    cJSON_AddBoolToObject(o, "power_on", st.power_on);
+    cJSON_AddStringToObject(o, "message", msg);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_lamp_siri_config(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *body = read_json_body(req, 256);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    const cJSON *en = cJSON_GetObjectItem(body, "enabled");
+    const cJSON *regen = cJSON_GetObjectItem(body, "regenerate");
+    bool has_en = cJSON_IsBool(en);
+    bool en_val = has_en && cJSON_IsTrue(en);
+    bool do_regen = cJSON_IsBool(regen) && cJSON_IsTrue(regen);
+    cJSON_Delete(body);
+
+    if (has_en) {
+        esp_err_t err = cfg_siri_set_enabled(en_val);
+        if (err != ESP_OK) return send_err(req, "500 Internal Server Error", "保存 Siri 开关失败");
+    }
+    if (do_regen) {
+        esp_err_t err = cfg_siri_regenerate_token(NULL);
+        if (err != ESP_OK) return send_err(req, "500 Internal Server Error", "重置 Siri 密钥失败");
     }
 
     cJSON *o = lamp_controller_build_state_json();
@@ -1345,6 +1459,9 @@ esp_err_t web_server_start(void)
         { .uri = "/api/lamp/learn/save",       .method = HTTP_POST,   .handler = handle_lamp_learn_save },
         { .uri = "/api/lamp/learn/cancel",     .method = HTTP_POST,   .handler = handle_lamp_learn_cancel },
         { .uri = "/api/lamp/sample/upload",    .method = HTTP_POST,   .handler = handle_lamp_sample_upload },
+        { .uri = "/api/lamp/siri",             .method = HTTP_GET,    .handler = handle_lamp_siri },
+        { .uri = "/api/lamp/siri",             .method = HTTP_POST,   .handler = handle_lamp_siri },
+        { .uri = "/api/lamp/siri/config",      .method = HTTP_PUT,    .handler = handle_lamp_siri_config },
     };
 
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {

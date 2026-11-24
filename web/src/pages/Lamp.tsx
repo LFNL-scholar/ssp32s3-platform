@@ -99,6 +99,44 @@ export function Lamp() {
     } catch (ex: any) { setErr(ex.message); }
   };
 
+  const updateSiri = async (body: { enabled?: boolean; regenerate?: boolean }) => {
+    setErr(''); setMsg('');
+    try {
+      const res = await api.lampSiriConfig(body);
+      setSt(res);
+      setMsg(body.regenerate ? '已重置 Siri 快捷指令密钥（旧快捷指令需更新链接）' : 'Siri 快捷指令开关已更新');
+    } catch (ex: any) { setErr(ex.message); }
+  };
+
+  const copyText = async (text: string, label: string) => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      setErr('');
+      setMsg(`已复制「${label}」快捷指令链接`);
+    } catch {
+      setErr('复制失败，请长按链接手动复制');
+    }
+  };
+
+  const siriHost = st?.siri?.hostname ? `${st.siri.hostname}.local` : location.host;
+  const siriToken = st?.siri?.token || '';
+  const siriUrls = [
+    { label: '开灯', action: 'on', url: `http://${siriHost}/api/lamp/siri?token=${siriToken}&action=on` },
+    { label: '关灯', action: 'off', url: `http://${siriHost}/api/lamp/siri?token=${siriToken}&action=off` },
+    { label: '切换开关', action: 'toggle', url: `http://${siriHost}/api/lamp/siri?token=${siriToken}&action=toggle` },
+  ];
+
   const range = periodRange(anchorDate, mode);
   const summary = histResp && range
     ? summarize(histResp.records, range.from, range.to, histResp.now || Math.floor(Date.now() / 1000), histResp.oldest)
@@ -269,6 +307,54 @@ export function Lamp() {
                 <span>第一人回到家时自动开灯</span>
               </label>
             </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">
+              <span>Siri 快捷指令（局域网一键控灯）</span>
+              <div class="row">
+                <label class="row" style={{ cursor: 'pointer', fontSize: '12px' }}>
+                  <input
+                    type="checkbox"
+                    checked={st?.siri?.enabled ?? false}
+                    onChange={(e) => updateSiri({ enabled: (e.target as HTMLInputElement).checked })}
+                  />
+                  <span>启用</span>
+                </label>
+                <button
+                  class="btn btn-sm"
+                  onClick={() => {
+                    if (confirm('重置密钥后，之前添加到 iPhone 快捷指令的旧链接将失效，确定重置吗？')) {
+                      updateSiri({ regenerate: true });
+                    }
+                  }}
+                >
+                  重置密钥
+                </button>
+              </div>
+            </div>
+            <p class="dim" style={{ marginTop: 0, fontSize: '12px' }}>
+              在 iPhone「快捷指令」新建指令（如“开台灯”），仅添加 1 个动作「获取 URL 内容」并粘贴下方链接即可（无需登录，重启不失效；<span class="mono">toggle</span> 在未校准时也能直接切换）：
+            </p>
+            {st?.siri?.enabled && siriToken ? (
+              <div class="grid" style={{ gap: '8px' }}>
+                {siriUrls.map((item) => (
+                  <div key={item.action} class="row" style={{ gap: '8px' }}>
+                    <span class="badge badge-blue" style={{ minWidth: '64px', textAlign: 'center' }}>{item.label}</span>
+                    <input
+                      class="input mono"
+                      readOnly
+                      value={item.url}
+                      style={{ flex: 1, fontSize: '11px', padding: '5px 8px' }}
+                      onClick={(e) => (e.target as HTMLInputElement).select()}
+                    />
+                    <button class="btn btn-sm" onClick={() => copyText(item.url, item.label)}>复制</button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div class="dim" style={{ fontSize: '12px' }}>已关闭 Siri 快捷指令接口，勾选右上角「启用」后显示链接。</div>
+            )}
           </div>
         </div>
       </div>

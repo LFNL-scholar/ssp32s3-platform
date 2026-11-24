@@ -149,6 +149,11 @@ export interface LampState {
     oldest: number;
     error: string;
   };
+  siri?: {
+    enabled: boolean;
+    token: string;
+    hostname: string;
+  };
 }
 
 export interface LampHistoryResp {
@@ -240,6 +245,8 @@ export const api = {
   lampLearnTest: () => req<{ ok: boolean }>('/api/lamp/learn/test', { method: 'POST' }),
   lampLearnSave: () => req<LampState & { ok: boolean }>('/api/lamp/learn/save', { method: 'POST' }),
   lampLearnCancel: () => req<{ ok: boolean }>('/api/lamp/learn/cancel', { method: 'POST' }),
+  lampSiriConfig: (body: { enabled?: boolean; regenerate?: boolean }) =>
+    req<LampState & { ok: boolean }>('/api/lamp/siri/config', { method: 'PUT', body: JSON.stringify(body) }),
 };
 
 type Listener = (msg: WsMessage) => void;

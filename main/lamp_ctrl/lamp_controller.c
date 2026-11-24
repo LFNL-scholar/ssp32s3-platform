@@ -175,6 +175,9 @@ cJSON *lamp_controller_build_state_json(void)
     cfg_settings_t cfg;
     cfg_settings_get(&cfg);
 
+    cfg_siri_t siri;
+    cfg_siri_get(&siri);
+
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "radio_ready", st.radio_ready);
     cJSON_AddBoolToObject(root, "storage_ready", st.storage_ready);
@@ -207,6 +210,12 @@ cJSON *lamp_controller_build_state_json(void)
     cJSON_AddNumberToObject(hist, "oldest", (double)hst.oldest);
     cJSON_AddStringToObject(hist, "error", hst.error ? esp_err_to_name(hst.error) : "");
     cJSON_AddItemToObject(root, "history", hist);
+
+    cJSON *siri_obj = cJSON_CreateObject();
+    cJSON_AddBoolToObject(siri_obj, "enabled", siri.enabled);
+    cJSON_AddStringToObject(siri_obj, "token", siri.token);
+    cJSON_AddStringToObject(siri_obj, "hostname", cfg.hostname);
+    cJSON_AddItemToObject(root, "siri", siri_obj);
 
     return root;
 }
@@ -271,6 +280,53 @@ esp_err_t lamp_controller_set_power(bool on, bool is_auto, bool *transmitted)
 
     if (err == ESP_OK) {
         lamp_history_change(on, is_auto ? LAMP_HIST_AUTO : LAMP_HIST_WEB);
+        broadcast_lamp_state();
+    }
+    return err;
+}
+
+esp_err_t lamp_controller_toggle(bool *transmitted)
+{
+    if (transmitted) *transmitted = false;
+    if (!s_lock) return ESP_ERR_INVALID_STATE;
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_state.learning_active) {
+        xSemaphoreGive(s_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!s_state.radio_ready || !s_state.sample_loaded) {
+        set_error_locked(ESP_ERR_INVALID_STATE);
+        xSemaphoreGive(s_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err = waveform_play(s_power_wave, 1, 30);
+    bool record_hist = false;
+    bool new_on = false;
+    if (err == ESP_OK) {
+        ++s_state.power_transmissions;
+        snprintf(s_state.last_action, sizeof(s_state.last_action), "toggle");
+        if (s_state.power_known) {
+            s_state.power_on = !s_state.power_on;
+            new_on = s_state.power_on;
+            record_hist = true;
+            esp_err_t save_err = save_power_state_nvs(s_state.power_on);
+            if (save_err != ESP_OK) set_error_locked(save_err);
+            else s_state.last_error[0] = '\0';
+        } else {
+            s_state.last_error[0] = '\0';
+        }
+        if (transmitted) *transmitted = true;
+    } else {
+        set_error_locked(err);
+    }
+    xSemaphoreGive(s_lock);
+
+    if (err == ESP_OK) {
+        if (record_hist) {
+            lamp_history_change(new_on, LAMP_HIST_WEB);
+        }
         broadcast_lamp_state();
     }
     return err;
