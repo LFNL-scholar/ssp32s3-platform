@@ -6,10 +6,11 @@ import { Overview } from './pages/Overview';
 import { Lamp } from './pages/Lamp';
 import { Presence } from './pages/Presence';
 import { Topology } from './pages/Topology';
+import { Blueprint } from './pages/Blueprint';
 import { Hardware } from './pages/Hardware';
 import { applyThemeMode, getSavedThemeMode, resolveTheme, ThemeMode } from './utils/theme';
 
-type Tab = 'overview' | 'lighting' | 'presence' | 'topology' | 'hardware';
+type Tab = 'overview' | 'lighting' | 'presence' | 'topology' | 'blueprint' | 'hardware';
 
 export function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
@@ -101,6 +102,10 @@ export function App() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" /><line x1="9" y1="3" x2="9" y2="18" /><line x1="15" y1="6" x2="15" y2="21" /></svg>
             <span>空间拓扑</span>
           </button>
+          <button class={`nav-item ${tab === 'blueprint' ? 'active' : ''}`} onClick={() => switchTab('blueprint')}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="1" /><path d="M9 3v18M15 3v18M3 9h18M3 15h18" /></svg>
+            <span>硬件蓝图</span>
+          </button>
           <button class={`nav-item ${tab === 'hardware' ? 'active' : ''}`} onClick={() => switchTab('hardware')}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="4" y="4" width="16" height="16" rx="1" /><rect x="9" y="9" width="6" height="6" /><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3" /></svg>
             <span>硬件与系统</span>
@@ -139,11 +144,12 @@ export function App() {
         </div>
       </aside>
 
-      <main class={`workspace ${tab === 'overview' || tab === 'lighting' || tab === 'topology' ? 'fit-screen' : ''}`}>
+      <main class={`workspace ${tab === 'overview' || tab === 'lighting' || tab === 'topology' || tab === 'blueprint' ? 'fit-screen' : ''}`}>
         {tab === 'overview' && <Overview onGoHardware={() => switchTab('hardware')} onGoLighting={() => switchTab('lighting')} themeTick={themeTick} />}
         {tab === 'lighting' && <Lamp themeTick={themeTick} />}
         {tab === 'presence' && <Presence themeTick={themeTick} />}
         {tab === 'topology' && <Topology />}
+        {tab === 'blueprint' && <Blueprint />}
         {tab === 'hardware' && <Hardware themeTick={themeTick} />}
       </main>
     </div>
