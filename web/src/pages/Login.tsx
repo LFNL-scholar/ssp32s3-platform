@@ -25,10 +25,17 @@ export function Login({ onSuccess }: Props) {
   };
 
   return (
-    <div class="container">
-      <div class="card auth-box">
-        <div class="card-title">SSP32S3 管理登录</div>
-        {err && <div class="alert alert-err">{err}</div>}
+    <div class="auth-wrap">
+      <div class="card auth-card">
+        <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+          <img src="/logo.png" alt="LFNL Logo" class="logo-light" style={{ height: '26px', width: 'auto', margin: '0 auto 14px' }} />
+          <img src="/logo-dark.png" alt="LFNL Logo" class="logo-dark" style={{ height: '26px', width: 'auto', margin: '0 auto 14px' }} />
+          <div class="eyebrow" style={{ justifyContent: 'center' }}>ACCESS CONTROL</div>
+          <h2 style={{ fontSize: '20px', fontWeight: 700, marginTop: '4px' }}>S3控制系统</h2>
+        </div>
+
+        {err && <div class="alert alert-err" style={{ marginBottom: '14px' }}>{err}</div>}
+
         <form onSubmit={submit}>
           <div class="field">
             <label>管理员密码</label>
@@ -42,8 +49,8 @@ export function Login({ onSuccess }: Props) {
               required
             />
           </div>
-          <button class="btn btn-primary" style={{ width: '100%' }} disabled={busy}>
-            {busy ? '验证中...' : '登录'}
+          <button class="btn btn-primary" style={{ width: '100%', padding: '10px' }} disabled={busy}>
+            {busy ? '验证中...' : '登录系统'}
           </button>
         </form>
       </div>

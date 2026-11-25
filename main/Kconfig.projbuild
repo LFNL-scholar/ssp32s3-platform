@@ -21,10 +21,10 @@ menu "SSP32S3 Platform Configuration"
 
     config SSP_SOFTAP_PREFIX
         string "SoftAP SSID prefix"
-        default "SSP32S3-"
+        default "ESP32S3-"
 
     config SSP_DEFAULT_HOSTNAME
         string "Default mDNS hostname"
-        default "ssp32s3"
+        default "esp32s3"
 
 endmenu

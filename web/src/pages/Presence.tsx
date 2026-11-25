@@ -1,40 +1,39 @@
 import { useEffect, useState } from 'preact/hooks';
 import { api, NearbyBleDevice, PersonState, PresenceLogEntry, TrackedDevice, wsClient } from '../api/client';
-import { LineChart } from '../components/LineChart';
+import { TelemetryChart } from '../components/Charts';
+import { chartPalette } from '../utils/theme';
 
 function fmtLogTime(e: PresenceLogEntry) {
   if (e.time_synced && e.timestamp > 0) {
     return new Date(e.timestamp * 1000).toLocaleString('zh-CN', { hour12: false });
   }
-  return `开机后 ${e.uptime_s} 秒`;
+  return `开机后 ${e.uptime_s}s`;
 }
 
-export function Presence() {
+export function Presence({ themeTick }: { themeTick: string }) {
   const [persons, setPersons] = useState<PersonState[]>([]);
   const [newPerson, setNewPerson] = useState('');
   const [nearby, setNearby] = useState<NearbyBleDevice[]>([]);
   const [logs, setLogs] = useState<PresenceLogEntry[]>([]);
   const [logTotal, setLogTotal] = useState(0);
   const [logPage, setLogPage] = useState(0);
+  const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
 
-  // Selected device for live RSSI chart
   const [chartDevId, setChartDevId] = useState<number | null>(null);
   const [rssiHist, setRssiHist] = useState<Record<number, (number | null)[]>>({});
   const [rawHist, setRawHist] = useState<Record<number, (number | null)[]>>({});
 
-  // Pairing modal
+  const [enterThresh, setEnterThresh] = useState(-75);
+  const [exitThresh, setExitThresh] = useState(-85);
+  const [awayTimeout, setAwayTimeout] = useState(120);
+
   const [pairModal, setPairModal] = useState<{ open: boolean; personId: number; label: string; active: boolean; remaining: number; msg: string; ok: boolean }>({
     open: false, personId: 0, label: '', active: false, remaining: 60, msg: '', ok: false,
   });
-
-  // Fixed MAC bind modal
   const [bindModal, setBindModal] = useState<{ open: boolean; mac: string; label: string; personId: number }>({
     open: false, mac: '', label: '', personId: 0,
   });
-
-  // Edit device thresholds modal
-  const [editDev, setEditDev] = useState<{ id: number; label: string; enter_rssi: number; exit_rssi: number; away_timeout_s: number } | null>(null);
 
   const loadState = async () => {
     try {
@@ -42,11 +41,14 @@ export function Presence() {
       setPersons(res.persons);
       if (!chartDevId) {
         const firstDev = res.persons.flatMap((p) => p.devices)[0];
-        if (firstDev) setChartDevId(firstDev.id);
+        if (firstDev) {
+          setChartDevId(firstDev.id);
+          setEnterThresh(firstDev.enter_rssi ?? -75);
+          setExitThresh(firstDev.exit_rssi ?? -85);
+          setAwayTimeout(firstDev.away_timeout_s ?? 120);
+        }
       }
-    } catch (ex: any) {
-      setErr(ex.message);
-    }
+    } catch (ex: any) { setErr(ex.message); }
   };
 
   const loadScan = async () => {
@@ -58,7 +60,7 @@ export function Presence() {
 
   const loadLogs = async (page = logPage) => {
     try {
-      const res = await api.logs(20, page * 20);
+      const res = await api.logs(12, page * 12);
       setLogs(res.logs || []);
       setLogTotal(res.total || 0);
     } catch { /* ignore */ }
@@ -69,23 +71,20 @@ export function Presence() {
     loadScan();
     loadLogs(0);
 
-    const unsub = wsClient.subscribe((msg) => {
-      if (msg.type === 'presence_tick') {
+    const unsub = wsClient.subscribe((m) => {
+      if (m.type === 'presence_tick') {
         setPersons((prev) =>
-          msg.persons.map((np) => {
+          m.persons.map((np) => {
             const oldP = prev.find((p) => p.id === np.id);
             return {
               ...np,
-              devices: np.devices.map((nd) => {
-                const oldD = oldP?.devices.find((d) => d.id === nd.id);
-                return { ...oldD, ...nd };
-              }),
+              devices: np.devices.map((nd) => ({ ...oldP?.devices.find((d) => d.id === nd.id), ...nd })),
             };
           })
         );
         setRssiHist((prev) => {
           const next = { ...prev };
-          msg.persons.forEach((p) =>
+          m.persons.forEach((p) =>
             p.devices.forEach((d) => {
               const arr = next[d.id] || [];
               next[d.id] = [...arr.slice(-59), d.seen_ago_s >= 0 && d.rssi > -120 ? d.rssi : null];
@@ -95,7 +94,7 @@ export function Presence() {
         });
         setRawHist((prev) => {
           const next = { ...prev };
-          msg.persons.forEach((p) =>
+          m.persons.forEach((p) =>
             p.devices.forEach((d) => {
               const arr = next[d.id] || [];
               next[d.id] = [...arr.slice(-59), d.seen_ago_s >= 0 && d.raw_rssi > -120 ? d.raw_rssi : null];
@@ -103,389 +102,391 @@ export function Presence() {
           );
           return next;
         });
-      } else if (msg.type === 'presence_event') {
+      } else if (m.type === 'presence_event') {
         loadLogs(0);
-      } else if (msg.type === 'pair_result') {
-        setPairModal((m) => ({
-          ...m,
+      } else if (m.type === 'pair_result') {
+        setPairModal((pm) => ({
+          ...pm,
           active: false,
-          ok: msg.status === 'success',
-          msg: msg.status === 'success' ? `配对成功！已绑定设备「${msg.label}」` : (msg.reason || '配对未完成'),
+          ok: m.status === 'success',
+          msg: m.status === 'success' ? `配对成功！已绑定设备「${m.label}」` : (m.reason || '配对未完成'),
         }));
-        if (msg.status === 'success') loadState();
+        if (m.status === 'success') loadState();
       }
     });
     return unsub;
   }, []);
 
   useEffect(() => {
-    if (!pairModal.active) return;
+    if (!pairModal.open || !pairModal.active) return;
     const t = window.setInterval(() => {
-      setPairModal((m) => (m.active && m.remaining > 0 ? { ...m, remaining: m.remaining - 1 } : m));
+      setPairModal((pm) => (pm.remaining > 0 ? { ...pm, remaining: pm.remaining - 1 } : pm));
     }, 1000);
     return () => window.clearInterval(t);
-  }, [pairModal.active]);
+  }, [pairModal.open, pairModal.active]);
 
-  const addPerson = async (e: Event) => {
-    e.preventDefault();
-    if (!newPerson.trim()) return;
-    setErr('');
-    try {
-      await api.addPerson(newPerson.trim());
-      setNewPerson('');
-      await loadState();
-    } catch (ex: any) { setErr(ex.message); }
+  const allDevs: TrackedDevice[] = persons.flatMap((p) => p.devices);
+  const selectedDev = allDevs.find((d) => d.id === chartDevId) || allDevs[0] || null;
+  const P = chartPalette();
+
+  const emaData = selectedDev ? rssiHist[selectedDev.id] || [] : [];
+  const rawData = selectedDev ? rawHist[selectedDev.id] || [] : [];
+  const validEma = emaData.filter((v): v is number => v !== null);
+  const curEma = validEma.length ? validEma[validEma.length - 1] : null;
+  const maxEma = validEma.length ? Math.max(...validEma) : null;
+  const avgEma = validEma.length ? validEma.reduce((a, b) => a + b, 0) / validEma.length : null;
+
+  const selectDevice = (d: TrackedDevice) => {
+    setChartDevId(d.id);
+    setEnterThresh(d.enter_rssi ?? -75);
+    setExitThresh(d.exit_rssi ?? -85);
+    setAwayTimeout(d.away_timeout_s ?? 120);
   };
 
-  const renamePerson = async (p: PersonState) => {
-    const name = window.prompt('输入新名称', p.name);
-    if (!name || name.trim() === p.name) return;
+  const saveThresholds = async () => {
+    if (!selectedDev) return;
+    setErr(''); setMsg('');
     try {
-      await api.renamePerson(p.id, name.trim());
-      await loadState();
-    } catch (ex: any) { setErr(ex.message); }
-  };
-
-  const deletePerson = async (p: PersonState) => {
-    if (!window.confirm(`确定删除「${p.name}」及其所有绑定设备？`)) return;
-    try {
-      await api.deletePerson(p.id);
-      await loadState();
-    } catch (ex: any) { setErr(ex.message); }
-  };
-
-  const deleteDevice = async (d: TrackedDevice) => {
-    if (!window.confirm(`确定解绑设备「${d.label}」？`)) return;
-    try {
-      await api.deleteDevice(d.id);
-      await loadState();
-    } catch (ex: any) { setErr(ex.message); }
-  };
-
-  const startPairing = async () => {
-    if (!pairModal.label.trim()) return;
-    setErr('');
-    try {
-      await api.startPairing(pairModal.personId, pairModal.label.trim(), 60);
-      setPairModal((m) => ({ ...m, active: true, remaining: 60, msg: '请在手机系统蓝牙设置中连接「SSP32S3-Pair」并确认配对', ok: false }));
-    } catch (ex: any) {
-      setPairModal((m) => ({ ...m, msg: ex.message, active: false }));
-    }
-  };
-
-  const stopPairing = async () => {
-    await api.stopPairing().catch(() => {});
-    setPairModal((m) => ({ ...m, active: false, open: false }));
-  };
-
-  const submitFixedBind = async (e: Event) => {
-    e.preventDefault();
-    if (!bindModal.personId || !bindModal.label.trim()) return;
-    try {
-      await api.addFixedDevice({
-        person_id: bindModal.personId,
-        label: bindModal.label.trim(),
-        mac: bindModal.mac,
-        enter_rssi: -75,
-        exit_rssi: -85,
-        away_timeout_s: 120,
+      await api.updateDevice(selectedDev.id, {
+        label: selectedDev.label,
+        enter_rssi: enterThresh,
+        exit_rssi: exitThresh,
+        away_timeout_s: awayTimeout,
       });
-      setBindModal({ open: false, mac: '', label: '', personId: 0 });
-      await loadState();
+      setMsg(`已保存「${selectedDev.label}」阈值配置`);
+      loadState();
     } catch (ex: any) { setErr(ex.message); }
   };
 
-  const saveEditDev = async (e: Event) => {
-    e.preventDefault();
-    if (!editDev) return;
-    try {
-      await api.updateDevice(editDev.id, {
-        label: editDev.label,
-        enter_rssi: editDev.enter_rssi,
-        exit_rssi: editDev.exit_rssi,
-        away_timeout_s: editDev.away_timeout_s,
-      });
-      setEditDev(null);
-      await loadState();
-    } catch (ex: any) { setErr(ex.message); }
-  };
-
-  const allDevices = persons.flatMap((p) => p.devices.map((d) => ({ ...d, personName: p.name })));
-  const selectedDev = allDevices.find((d) => d.id === chartDevId) || allDevices[0];
+  const homePersons = persons.filter((p) => p.is_home).length;
+  const activeDevs = allDevs.filter((d) => d.is_home).length;
 
   return (
-    <div class="grid" style={{ gap: '14px' }}>
+    <>
+      <div class="view-header">
+        <div>
+          <div class="eyebrow">NIMBLE · IRK + RPA 空间雷达</div>
+          <h1 class="view-title">空间感知与蓝牙雷达</h1>
+        </div>
+        <div class="btn-row">
+          <input
+            class="input"
+            style={{ width: '140px' }}
+            placeholder="新成员名称..."
+            value={newPerson}
+            onInput={(e) => setNewPerson((e.target as HTMLInputElement).value)}
+          />
+          <button
+            class="btn"
+            onClick={async () => {
+              if (!newPerson.trim()) return;
+              try {
+                await api.addPerson(newPerson.trim());
+                setNewPerson('');
+                loadState();
+              } catch (ex: any) { setErr(ex.message); }
+            }}
+          >
+            + 添加成员
+          </button>
+          <button
+            class="btn btn-primary"
+            disabled={persons.length === 0}
+            onClick={() =>
+              setPairModal({
+                open: true,
+                personId: persons[0]?.id || 0,
+                label: '我的手机',
+                active: false,
+                remaining: 60,
+                msg: '',
+                ok: false,
+              })
+            }
+          >
+            + 配对手机 (IRK)
+          </button>
+          <button class="btn" onClick={loadScan}>扫描雷达</button>
+        </div>
+      </div>
+
+      {msg && <div class="alert alert-ok">{msg}</div>}
       {err && <div class="alert alert-err">{err}</div>}
 
-      <div class="card">
-        <div class="card-title">
-          <span>人员与设备管理</span>
-          <form class="row" onSubmit={addPerson}>
-            <input
-              class="input"
-              style={{ width: '160px' }}
-              placeholder="输入人员姓名"
-              value={newPerson}
-              onInput={(e) => setNewPerson((e.target as HTMLInputElement).value)}
-            />
-            <button class="btn btn-primary btn-sm" type="submit">+ 添加人员</button>
-          </form>
+      <div class="grid g-4">
+        <div class="card">
+          <div class="card-head"><span class="card-title">当前在家成员</span><span class={`tag ${homePersons > 0 ? 'dark' : ''}`}>{homePersons > 0 ? '在线' : '离家'}</span></div>
+          <div class="kpi-val num">{homePersons}<span class="kpi-unit">/ {persons.length} 人</span></div>
+          <div class="kpi-sub">支持多人多设备协同判定</div>
         </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">活跃追踪设备</span><span class="tag">IRK + MAC</span></div>
+          <div class="kpi-val num">{activeDevs}<span class="kpi-unit">/ {allDevs.length} 台</span></div>
+          <div class="kpi-sub">随机 MAC 自动解析</div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">选中设备信号</span><span class="tag red">实时</span></div>
+          <div class="kpi-val num">{curEma !== null ? Math.round(curEma) : '--'}<span class="kpi-unit">dBm</span></div>
+          <div class="kpi-sub">{selectedDev ? `${selectedDev.label} · EMA 平滑` : '暂未选中设备'}</div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">雷达扫描状态</span><span class="tag">NimBLE</span></div>
+          <div class="kpi-val num">{nearby.length}<span class="kpi-unit">台附近设备</span></div>
+          <div class="kpi-sub">环形日志 {logTotal} / 1000 条</div>
+        </div>
+      </div>
 
-        {persons.length === 0 ? (
-          <div class="dim">暂无人员，请先添加一个人员（例如“自己”或家人姓名），再绑定手机或手环。</div>
-        ) : (
-          <div class="grid grid-2">
+      <div class="grid g-pres-top grow">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">绑定成员与设备</span>
+            <span class="tag">点击设备切换曲线</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', flex: 1 }}>
             {persons.map((p) => (
-              <div key={p.id} class="card" style={{ background: '#0f172a' }}>
-                <div class="card-title">
-                  <div class="row">
-                    <span>{p.name}</span>
-                    <span class={`badge ${p.is_home ? 'badge-green' : 'badge-gray'}`}>
-                      {p.is_home ? '在家' : '离开'}
-                    </span>
+              <div class="person-box" key={p.id}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <div class="avatar">{p.name.slice(0, 1).toUpperCase()}</div>
+                    <div>
+                      <div style={{ fontWeight: 600 }}>{p.name}</div>
+                      <div class="kpi-sub">绑定 {p.devices.length} 台设备</div>
+                    </div>
                   </div>
-                  <div class="row">
+                  <div class="btn-row">
+                    <span class={`tag ${p.is_home ? 'dark' : ''}`}>{p.is_home ? '在家' : '离家'}</span>
                     <button
-                      class="btn btn-sm btn-primary"
-                      onClick={() => setPairModal({ open: true, personId: p.id, label: `${p.name}的手机`, active: false, remaining: 60, msg: '', ok: false })}
+                      class="btn btn-sm btn-danger"
+                      onClick={async () => {
+                        if (!window.confirm(`删除成员「${p.name}」及其所有设备？`)) return;
+                        await api.deletePerson(p.id);
+                        loadState();
+                      }}
                     >
-                      + 配对手机 (IRK)
+                      删除
                     </button>
-                    <button class="btn btn-sm" onClick={() => renamePerson(p)}>改名</button>
-                    <button class="btn btn-sm btn-danger" onClick={() => deletePerson(p)}>删除</button>
                   </div>
                 </div>
-
-                {p.devices.length === 0 ? (
-                  <div class="dim" style={{ fontSize: '12px' }}>未绑定设备。可点击“配对手机”或从下方扫描雷达添加固定 MAC 设备。</div>
-                ) : (
-                  <div class="grid" style={{ gap: '8px' }}>
-                    {p.devices.map((d) => (
-                      <div key={d.id} style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: '8px', background: 'var(--bg-card)' }}>
-                        <div class="row" style={{ justifyContent: 'space-between' }}>
-                          <div class="row">
-                            <b>{d.label}</b>
-                            <span class="badge badge-blue">{d.match_type || 'BLE'}</span>
-                            <span class={`badge ${d.is_home ? 'badge-green' : 'badge-gray'}`}>{d.is_home ? '在场' : '离线'}</span>
-                          </div>
-                          <div class="row">
-                            <button class="btn btn-sm" onClick={() => setChartDevId(d.id)}>曲线</button>
-                            <button class="btn btn-sm" onClick={() => setEditDev({
-                              id: d.id,
-                              label: d.label,
-                              enter_rssi: d.enter_rssi ?? -75,
-                              exit_rssi: d.exit_rssi ?? -85,
-                              away_timeout_s: d.away_timeout_s ?? 120,
-                            })}>调参</button>
-                            <button class="btn btn-sm btn-danger" onClick={() => deleteDevice(d)}>解绑</button>
-                          </div>
-                        </div>
-                        <div class="dim" style={{ fontSize: '12px', marginTop: '4px' }}>
-                          平滑 RSSI: <b>{d.seen_ago_s >= 0 ? `${d.rssi} dBm` : '--'}</b> ·
-                          最近看到: {d.seen_ago_s >= 0 ? `${d.seen_ago_s}秒前` : '尚未扫描到'} ·
-                          阈值: {d.enter_rssi ?? -75}/{d.exit_rssi ?? -85} dBm · 超时 {d.away_timeout_s ?? 120}s
-                        </div>
+                {p.devices.map((d) => (
+                  <div class={`dev-row ${selectedDev?.id === d.id ? 'selected' : ''}`} key={d.id} onClick={() => selectDevice(d)}>
+                    <div>
+                      <div style={{ fontSize: '13px', fontWeight: 600 }}>
+                        {d.label} <span class="tag" style={{ marginLeft: '4px' }}>{d.match_type || 'BLE'}</span>
                       </div>
-                    ))}
+                      <div class="kpi-sub num">进入 {d.enter_rssi ?? -75} / 离开 {d.exit_rssi ?? -85} · {d.away_timeout_s ?? 120}s</div>
+                    </div>
+                    <div class="btn-row">
+                      <span class="num" style={{ fontWeight: 700 }}>{d.seen_ago_s >= 0 && d.rssi > -120 ? `${d.rssi} dBm` : '--'}</span>
+                      <button
+                        class="btn btn-sm btn-danger"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (!window.confirm(`解绑设备「${d.label}」？`)) return;
+                          await api.deleteDevice(d.id);
+                          loadState();
+                        }}
+                      >
+                        解绑
+                      </button>
+                    </div>
                   </div>
-                )}
+                ))}
               </div>
             ))}
           </div>
-        )}
-      </div>
+        </div>
 
-      {selectedDev && (
         <div class="card">
-          <div class="card-title">
-            <span>实时 RSSI 校准曲线 — {selectedDev.personName} / {selectedDev.label}</span>
-            <select
-              style={{ width: 'auto' }}
-              value={selectedDev.id}
-              onChange={(e) => setChartDevId(Number((e.target as HTMLSelectElement).value))}
-            >
-              {allDevices.map((d) => <option key={d.id} value={d.id}>{d.personName} - {d.label}</option>)}
-            </select>
+          <div class="card-head">
+            <span class="card-title">实时 RSSI 滤波与迟滞校准{selectedDev ? ` · ${selectedDev.label}` : ''}</span>
+            <div class="chart-legend">
+              <span class="legend-item"><span class="legend-line" style={{ background: P.ink }} />EMA 平滑</span>
+              <span class="legend-item"><span class="legend-dot" style={{ background: P.lbl }} />Raw 采样</span>
+              <span class="legend-item"><span class="legend-line" style={{ background: P.sec }} />进入 {enterThresh}</span>
+              <span class="legend-item"><span class="legend-line" style={{ background: P.red }} />离开 {exitThresh}</span>
+            </div>
           </div>
-          <LineChart
-            min={-105}
-            max={-30}
+          <div class="chart-stats">
+            <span class="chart-stat-item">当前 EMA <strong class="num">{curEma !== null ? `${Math.round(curEma)} dBm` : '--'}</strong></span>
+            <span class="chart-stat-item">60s 峰值 <strong class="num">{maxEma !== null ? `${Math.round(maxEma)} dBm` : '--'}</strong></span>
+            <span class="chart-stat-item">60s 均值 <strong class="num">{avgEma !== null ? `${Math.round(avgEma)} dBm` : '--'}</strong></span>
+            <span class="chart-stat-item">判定状态 <strong class={selectedDev?.is_home ? 'red' : ''}>{selectedDev ? (selectedDev.is_home ? '在家' : '离开') : '--'}</strong></span>
+          </div>
+          <TelemetryChart
+            id="chart-ble"
+            min={-95}
+            max={-45}
+            yTicks={[-95, -85, -75, -65, -55, -45]}
             unit=" dBm"
-            height={160}
-            series={[
-              { label: '平滑 RSSI', color: '#38bdf8', data: rssiHist[selectedDev.id] || [] },
-              { label: '原始 RSSI', color: '#94a3b8', data: rawHist[selectedDev.id] || [] },
+            rawSeries={rawData}
+            awayBelow={exitThresh}
+            series={[{ label: 'EMA 平滑', color: P.ink, data: emaData, w: 2, fmt: (v) => `${Math.round(v)} dBm` }]}
+            refLines={[
+              { val: enterThresh, color: P.sec, bg: P.tagBg },
+              { val: exitThresh, color: P.red, bg: P.tagRedBg },
             ]}
-            thresholds={[
-              { value: selectedDev.enter_rssi ?? -75, label: '到家阈值', color: '#22c55e' },
-              { value: selectedDev.exit_rssi ?? -85, label: '离开阈值', color: '#ef4444' },
-            ]}
+            themeTick={themeTick}
           />
-        </div>
-      )}
-
-      <div class="card">
-        <div class="card-title">
-          <span>附近 BLE 扫描雷达（近 30 秒）</span>
-          <button class="btn btn-sm" onClick={loadScan}>刷新列表</button>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>MAC 地址</th><th>类型</th><th>广播名称</th><th>RSSI</th><th>最近出现</th><th>操作</th></tr></thead>
-            <tbody>
-              {nearby.slice(0, 20).map((d) => (
-                <tr key={`${d.mac}-${d.addr_type}`}>
-                  <td class="mono">{d.mac}</td>
-                  <td><span class="badge badge-gray">{d.addr_type}</span></td>
-                  <td>{d.name || <span class="dim">(未广播名称)</span>}</td>
-                  <td class="mono">{d.rssi} dBm</td>
-                  <td>{d.seen_ago_s}s 前</td>
-                  <td>
-                    <button
-                      class="btn btn-sm"
-                      disabled={persons.length === 0}
-                      onClick={() => setBindModal({
-                        open: true,
-                        mac: d.mac,
-                        label: d.name || `BLE-${d.mac.slice(-5)}`,
-                        personId: persons[0]?.id || 0,
-                      })}
-                    >
-                      绑定固定 MAC
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {nearby.length === 0 && <tr><td colSpan={6} class="dim">暂无附近设备，点击右上角刷新</td></tr>}
-            </tbody>
-          </table>
+          <div class="calib-bar">
+            <div class="calib-item">
+              <label><span>进入阈值</span><strong class="num">{enterThresh} dBm</strong></label>
+              <input type="range" min={-90} max={-50} value={enterThresh} onInput={(e) => setEnterThresh(Number((e.target as HTMLInputElement).value))} />
+            </div>
+            <div class="calib-item">
+              <label><span>离开阈值</span><strong class="num">{exitThresh} dBm</strong></label>
+              <input type="range" min={-95} max={-60} value={exitThresh} onInput={(e) => setExitThresh(Number((e.target as HTMLInputElement).value))} />
+            </div>
+            <div class="calib-item">
+              <label><span>离家超时</span><strong class="num">{awayTimeout} 秒</strong></label>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <input type="range" min={30} max={300} step={10} value={awayTimeout} onInput={(e) => setAwayTimeout(Number((e.target as HTMLInputElement).value))} />
+                <button class="btn btn-sm btn-primary" disabled={!selectedDev} onClick={saveThresholds}>应用</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-title">
-          <span>进出历史日志（共 {logTotal} 条，最多保留 1000 条）</span>
-          <div class="row">
-            <button class="btn btn-sm" onClick={() => loadLogs(logPage)}>刷新</button>
-            <button class="btn btn-sm btn-danger" onClick={async () => {
-              if (window.confirm('确定清空全部历史日志？')) {
-                await api.clearLogs();
-                loadLogs(0);
-              }
-            }}>清空日志</button>
+      <div class="grid g-2 grow">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">附近 BLE 广播雷达</span>
+            <span class="tag">实时发现 {nearby.length} 台</span>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table class="kv-table">
+              <thead><tr><th>设备名称 / 地址</th><th>类型</th><th>信号</th><th>操作</th></tr></thead>
+              <tbody>
+                {nearby.slice(0, 8).map((d) => (
+                  <tr key={d.mac}>
+                    <td>
+                      <div style={{ fontWeight: 600 }}>{d.name || '未知设备'}</div>
+                      <div class="kpi-sub num">{d.mac}</div>
+                    </td>
+                    <td><span class="tag">{d.addr_type}</span></td>
+                    <td class="num" style={{ fontWeight: 600 }}>{d.rssi} dBm</td>
+                    <td>
+                      <button
+                        class="btn btn-sm"
+                        disabled={persons.length === 0}
+                        onClick={() => setBindModal({ open: true, mac: d.mac, label: d.name || 'BLE设备', personId: persons[0]?.id || 0 })}
+                      >
+                        绑定
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>#</th><th>时间</th><th>人员</th><th>事件</th><th>触发设备</th><th>RSSI</th></tr></thead>
+
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">进出历史日志（LittleFS 1000 条环形存储）</span>
+            <div class="btn-row">
+              <button class="btn btn-sm" disabled={logPage === 0} onClick={() => { setLogPage(logPage - 1); loadLogs(logPage - 1); }}>上一页</button>
+              <button class="btn btn-sm" disabled={(logPage + 1) * 12 >= logTotal} onClick={() => { setLogPage(logPage + 1); loadLogs(logPage + 1); }}>下一页</button>
+              <button class="btn btn-sm btn-danger" onClick={async () => { if (window.confirm('确定清空全部进出日志？')) { await api.clearLogs(); loadLogs(0); } }}>清空</button>
+            </div>
+          </div>
+          <table class="kv-table">
+            <thead><tr><th>时间</th><th>成员</th><th>事件</th><th>触发设备</th><th>信号</th></tr></thead>
             <tbody>
-              {logs.map((l) => (
+              {logs.slice(0, 6).map((l) => (
                 <tr key={l.seq}>
-                  <td class="mono dim">{l.seq}</td>
-                  <td class="mono">{fmtLogTime(l)}</td>
+                  <td class="num">{fmtLogTime(l)}</td>
                   <td>{l.person_name}</td>
-                  <td><span class={`badge ${l.event === 'ARRIVE' ? 'badge-green' : 'badge-amber'}`}>{l.event === 'ARRIVE' ? '到家' : '离开'}</span></td>
-                  <td>{l.device}</td>
-                  <td class="mono">{l.rssi} dBm</td>
+                  <td><span class={`tag ${l.event === 'ARRIVE' ? 'dark' : 'red'}`}>{l.event === 'ARRIVE' ? '回家' : '离家'}</span></td>
+                  <td>{l.device || '--'}</td>
+                  <td class="num">{l.rssi} dBm</td>
                 </tr>
               ))}
-              {logs.length === 0 && <tr><td colSpan={6} class="dim">暂无进出记录</td></tr>}
             </tbody>
           </table>
         </div>
-        {logTotal > 20 && (
-          <div class="row" style={{ justifyContent: 'flex-end', marginTop: '10px' }}>
-            <button class="btn btn-sm" disabled={logPage === 0} onClick={() => { setLogPage(logPage - 1); loadLogs(logPage - 1); }}>上一页</button>
-            <span class="dim">第 {logPage + 1} 页</span>
-            <button class="btn btn-sm" disabled={(logPage + 1) * 20 >= logTotal} onClick={() => { setLogPage(logPage + 1); loadLogs(logPage + 1); }}>下一页</button>
-          </div>
-        )}
       </div>
 
+      {/* IRK PAIRING MODAL */}
       {pairModal.open && (
-        <div class="modal-mask">
-          <div class="modal">
-            <div class="card-title">
-              <span>手机蓝牙配对向导 (IRK)</span>
-              {pairModal.active && <span class="badge badge-blue">{pairModal.remaining}s</span>}
-            </div>
-            {pairModal.msg && (
-              <div class={`alert ${pairModal.ok ? 'alert-ok' : pairModal.active ? 'alert-info' : 'alert-err'}`}>
-                {pairModal.msg}
-              </div>
-            )}
-            {!pairModal.active && !pairModal.ok && (
-              <div class="field">
-                <label>设备备注名称</label>
-                <input class="input" value={pairModal.label} onInput={(e) => setPairModal((m) => ({ ...m, label: (e.target as HTMLInputElement).value }))} />
-              </div>
-            )}
-            <div class="row" style={{ justifyContent: 'flex-end' }}>
-              {!pairModal.active && !pairModal.ok && (
-                <button class="btn btn-primary" onClick={startPairing}>开始配对广播</button>
-              )}
-              <button class="btn" onClick={pairModal.active ? stopPairing : () => setPairModal((m) => ({ ...m, open: false }))}>
-                {pairModal.active ? '取消配对' : '关闭'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {bindModal.open && (
-        <div class="modal-mask">
-          <form class="modal" onSubmit={submitFixedBind}>
-            <div class="card-title">绑定固定 MAC 设备</div>
-            <div class="field">
-              <label>MAC 地址</label>
-              <input class="input mono" value={bindModal.mac} disabled />
+        <div class="modal-backdrop">
+          <div class="card modal-card">
+            <div class="card-head">
+              <span class="card-title">手机蓝牙配对（提取 IRK）</span>
+              <button class="btn btn-sm" onClick={() => { if (pairModal.active) api.stopPairing(); setPairModal({ ...pairModal, open: false, active: false }); }}>关闭</button>
             </div>
             <div class="field">
-              <label>所属人员</label>
-              <select value={bindModal.personId} onChange={(e) => setBindModal((m) => ({ ...m, personId: Number((e.target as HTMLSelectElement).value) }))}>
+              <label>归属成员</label>
+              <select class="input" value={pairModal.personId} onChange={(e) => setPairModal({ ...pairModal, personId: Number((e.target as HTMLSelectElement).value) })}>
                 {persons.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>
             <div class="field">
               <label>设备名称</label>
-              <input class="input" value={bindModal.label} onInput={(e) => setBindModal((m) => ({ ...m, label: (e.target as HTMLInputElement).value }))} required />
+              <input class="input" value={pairModal.label} onInput={(e) => setPairModal({ ...pairModal, label: (e.target as HTMLInputElement).value })} />
             </div>
-            <div class="row" style={{ justifyContent: 'flex-end' }}>
-              <button type="button" class="btn" onClick={() => setBindModal({ open: false, mac: '', label: '', personId: 0 })}>取消</button>
-              <button type="submit" class="btn btn-primary">确认绑定</button>
+            {pairModal.active ? (
+              <div class="alert alert-ok" style={{ marginBottom: '12px' }}>
+                正在广播配对信号（剩余 {pairModal.remaining}s）：请在手机系统蓝牙设置中连接 <b>ESP32S3-Presence</b> 并确认配对。
+              </div>
+            ) : pairModal.msg ? (
+              <div class={`alert ${pairModal.ok ? 'alert-ok' : 'alert-err'}`} style={{ marginBottom: '12px' }}>{pairModal.msg}</div>
+            ) : null}
+            <div class="btn-row">
+              {!pairModal.active ? (
+                <button
+                  class="btn btn-primary"
+                  onClick={async () => {
+                    try {
+                      await api.startPairing(pairModal.personId, pairModal.label.trim() || '我的手机', 60);
+                      setPairModal({ ...pairModal, active: true, remaining: 60, msg: '' });
+                    } catch (ex: any) { setErr(ex.message); }
+                  }}
+                >
+                  开启 60s 配对窗口
+                </button>
+              ) : (
+                <button class="btn btn-danger" onClick={() => { api.stopPairing(); setPairModal({ ...pairModal, active: false }); }}>停止配对</button>
+              )}
             </div>
-          </form>
+          </div>
         </div>
       )}
 
-      {editDev && (
-        <div class="modal-mask">
-          <form class="modal" onSubmit={saveEditDev}>
-            <div class="card-title">调整检测参数</div>
+      {/* FIXED MAC BIND MODAL */}
+      {bindModal.open && (
+        <div class="modal-backdrop">
+          <div class="card modal-card">
+            <div class="card-head">
+              <span class="card-title">绑定固定 MAC 设备</span>
+              <button class="btn btn-sm" onClick={() => setBindModal({ ...bindModal, open: false })}>关闭</button>
+            </div>
+            <div class="field"><label>MAC 地址</label><input class="input num" value={bindModal.mac} readOnly /></div>
             <div class="field">
-              <label>设备名称</label>
-              <input class="input" value={editDev.label} onInput={(e) => setEditDev({ ...editDev, label: (e.target as HTMLInputElement).value })} required />
+              <label>归属成员</label>
+              <select class="input" value={bindModal.personId} onChange={(e) => setBindModal({ ...bindModal, personId: Number((e.target as HTMLSelectElement).value) })}>
+                {persons.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
             </div>
             <div class="field">
-              <label>到家阈值 (dBm，默认 -75)</label>
-              <input class="input" type="number" min="-100" max="-20" value={editDev.enter_rssi} onInput={(e) => setEditDev({ ...editDev, enter_rssi: Number((e.target as HTMLInputElement).value) })} />
+              <label>设备备注</label>
+              <input class="input" value={bindModal.label} onInput={(e) => setBindModal({ ...bindModal, label: (e.target as HTMLInputElement).value })} />
             </div>
-            <div class="field">
-              <label>离开阈值 (dBm，默认 -85)</label>
-              <input class="input" type="number" min="-110" max="-30" value={editDev.exit_rssi} onInput={(e) => setEditDev({ ...editDev, exit_rssi: Number((e.target as HTMLInputElement).value) })} />
-            </div>
-            <div class="field">
-              <label>离开确认超时 (秒，默认 120)</label>
-              <input class="input" type="number" min="10" max="1800" value={editDev.away_timeout_s} onInput={(e) => setEditDev({ ...editDev, away_timeout_s: Number((e.target as HTMLInputElement).value) })} />
-            </div>
-            <div class="row" style={{ justifyContent: 'flex-end' }}>
-              <button type="button" class="btn" onClick={() => setEditDev(null)}>取消</button>
-              <button type="submit" class="btn btn-primary">保存</button>
-            </div>
-          </form>
+            <button
+              class="btn btn-primary"
+              onClick={async () => {
+                try {
+                  await api.addFixedDevice({ person_id: bindModal.personId, label: bindModal.label, mac: bindModal.mac, enter_rssi: -75, exit_rssi: -85, away_timeout_s: 120 });
+                  setBindModal({ ...bindModal, open: false });
+                  loadState();
+                } catch (ex: any) { setErr(ex.message); }
+              }}
+            >
+              确认绑定
+            </button>
+          </div>
         </div>
       )}
-    </div>
+    </>
   );
 }

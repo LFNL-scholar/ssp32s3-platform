@@ -6,6 +6,8 @@
 #include "freertos/task.h"
 #include "esp_ota_ops.h"
 #include "esp_app_format.h"
+#include "esp_partition.h"
+#include "esp_littlefs.h"
 #include "esp_timer.h"
 #include "esp_system.h"
 #include "esp_log.h"
@@ -150,4 +152,75 @@ void ota_mgr_confirm_if_pending(void)
             esp_ota_mark_app_valid_cancel_rollback();
         }
     }
+}
+
+esp_err_t ota_mgr_handle_www_upload(httpd_req_t *req)
+{
+    if (req->content_len < 4096) {
+        return send_json_err(req, "400 Bad Request", "Web 镜像文件过小或为空");
+    }
+
+    const esp_partition_t *www_part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_LITTLEFS, "www");
+    if (!www_part) {
+        return send_json_err(req, "500 Internal Server Error", "未找到 www 分区");
+    }
+
+    if ((size_t)req->content_len > www_part->size) {
+        return send_json_err(req, "413 Payload Too Large", "Web 镜像超出 www 分区容量");
+    }
+
+    char *buf = malloc(4096);
+    if (!buf) {
+        return send_json_err(req, "500 Internal Server Error", "内存不足");
+    }
+
+    ble_presence_pause_scan(true);
+    led_ctrl_set_flag(LED_FLAG_OTA, true);
+    esp_vfs_littlefs_unregister("www");
+
+    esp_err_t err = esp_partition_erase_range(www_part, 0, www_part->size);
+    const char *err_msg = "擦除 www 分区失败";
+    size_t offset = 0;
+    int remaining = req->content_len;
+
+    while (err == ESP_OK && remaining > 0) {
+        int to_read = remaining > 4096 ? 4096 : remaining;
+        int recv_len = httpd_req_recv(req, buf, to_read);
+        if (recv_len <= 0) {
+            if (recv_len == HTTPD_SOCK_ERR_TIMEOUT) continue;
+            err = ESP_FAIL;
+            err_msg = "网络传输中断";
+            break;
+        }
+        err = esp_partition_write(www_part, offset, buf, (size_t)recv_len);
+        if (err != ESP_OK) {
+            err_msg = "写入 www 分区失败";
+            break;
+        }
+        offset += (size_t)recv_len;
+        remaining -= recv_len;
+    }
+
+    free(buf);
+
+    if (err != ESP_OK) {
+        led_ctrl_set_flag(LED_FLAG_OTA, false);
+        ble_presence_pause_scan(false);
+        ESP_LOGE(TAG, "WWW OTA failed: %s (%s)", err_msg, esp_err_to_name(err));
+        return send_json_err(req, "400 Bad Request", err_msg);
+    }
+
+    ESP_LOGI(TAG, "WWW OTA succeeded (%u bytes), rebooting in 1s...", (unsigned)offset);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, "{\"ok\":true,\"rebooting\":true}", HTTPD_RESP_USE_STRLEN);
+
+    const esp_timer_create_args_t targs = { .callback = reboot_timer_cb, .name = "www_ota_reboot" };
+    esp_timer_handle_t t = NULL;
+    if (esp_timer_create(&targs, &t) == ESP_OK) {
+        esp_timer_start_once(t, 1000000ULL);
+    } else {
+        esp_restart();
+    }
+    return ESP_OK;
 }

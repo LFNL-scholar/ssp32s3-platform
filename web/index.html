@@ -3,9 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SSP32S3 控制台</title>
+  <title>S3控制系统</title>
+  <script>
+    (function(){
+      var m = localStorage.getItem('s3_theme_mode') || 'auto';
+      var h = new Date().getHours();
+      document.documentElement.dataset.theme = m === 'auto' ? (h >= 9 && h < 18 ? 'light' : 'dark') : m;
+    })();
+  </script>
 </head>
-<body>
+<body class="canvas-bg">
   <div id="app"></div>
   <script type="module" src="/src/main.tsx"></script>
 </body>

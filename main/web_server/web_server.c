@@ -534,6 +534,12 @@ static esp_err_t handle_ota_post(httpd_req_t *req)
     return ota_mgr_handle_upload(req);
 }
 
+static esp_err_t handle_ota_www_post(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    return ota_mgr_handle_www_upload(req);
+}
+
 static esp_err_t handle_system_reboot(httpd_req_t *req)
 {
     if (!require_auth(req)) return ESP_OK;
@@ -1436,6 +1442,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/settings",              .method = HTTP_GET,    .handler = handle_settings_get },
         { .uri = "/api/settings",              .method = HTTP_PUT,    .handler = handle_settings_put },
         { .uri = "/api/ota",                   .method = HTTP_POST,   .handler = handle_ota_post },
+        { .uri = "/api/ota/www",               .method = HTTP_POST,   .handler = handle_ota_www_post },
         { .uri = "/api/system/reboot",         .method = HTTP_POST,   .handler = handle_system_reboot },
         { .uri = "/api/system/factory-reset",  .method = HTTP_POST,   .handler = handle_system_factory_reset },
         { .uri = "/api/presence/state",        .method = HTTP_GET,    .handler = handle_presence_state },
