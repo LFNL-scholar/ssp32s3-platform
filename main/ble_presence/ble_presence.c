@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "esp_attr.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "mbedtls/aes.h"
@@ -72,10 +73,10 @@ static bool s_host_synced = false;
 static int s_pause_depth = 0;
 static bool s_scanning = false;
 
-static dev_rt_state_t s_dev_rt[CFG_MAX_DEVICES];
-static person_rt_state_t s_person_rt[CFG_MAX_PERSONS];
-static rpa_cache_entry_t s_rpa_cache[RPA_CACHE_SIZE];
-static nearby_slot_t s_nearby[BLE_NEARBY_MAX];
+static EXT_RAM_BSS_ATTR dev_rt_state_t s_dev_rt[CFG_MAX_DEVICES];
+static EXT_RAM_BSS_ATTR person_rt_state_t s_person_rt[CFG_MAX_PERSONS];
+static EXT_RAM_BSS_ATTR rpa_cache_entry_t s_rpa_cache[RPA_CACHE_SIZE];
+static EXT_RAM_BSS_ATTR nearby_slot_t s_nearby[BLE_NEARBY_MAX];
 
 // Pairing session state
 static bool s_pairing_active = false;
@@ -236,7 +237,7 @@ static bool rpa_matches_irk(const uint8_t rpa_le[6], const uint8_t irk_le[16])
 
 static uint8_t match_tracked_device_locked(const ble_addr_t *addr, int64_t ts_ms)
 {
-    static cfg_device_t devs[CFG_MAX_DEVICES];
+    static EXT_RAM_BSS_ATTR cfg_device_t devs[CFG_MAX_DEVICES];
     size_t dev_cnt = cfg_devices_list(devs, CFG_MAX_DEVICES);
     if (dev_cnt == 0) return 0;
 
@@ -587,7 +588,7 @@ static void presence_eval_task(void *arg)
             finish_pairing_locked("timeout", 0, "配对超时，请重试");
         }
 
-        static cfg_device_t devs[CFG_MAX_DEVICES];
+        static EXT_RAM_BSS_ATTR cfg_device_t devs[CFG_MAX_DEVICES];
         size_t dev_cnt = cfg_devices_list(devs, CFG_MAX_DEVICES);
 
         // Evaluate per-device hysteresis state machine
@@ -625,7 +626,7 @@ static void presence_eval_task(void *arg)
         }
 
         // Aggregate per-person state & emit events
-        static cfg_person_t persons[CFG_MAX_PERSONS];
+        static EXT_RAM_BSS_ATTR cfg_person_t persons[CFG_MAX_PERSONS];
         size_t person_cnt = cfg_persons_list(persons, CFG_MAX_PERSONS);
         int home_persons = 0;
 

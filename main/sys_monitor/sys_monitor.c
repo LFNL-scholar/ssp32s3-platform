@@ -14,6 +14,7 @@
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_littlefs.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_idf_version.h"
@@ -35,7 +36,7 @@ typedef struct {
 
 static temperature_sensor_handle_t s_tsens = NULL;
 static SemaphoreHandle_t s_mutex = NULL;
-static task_runtime_snap_t s_prev_snap[MAX_TRACKED_TASKS];
+static EXT_RAM_BSS_ATTR task_runtime_snap_t s_prev_snap[MAX_TRACKED_TASKS];
 static UBaseType_t s_prev_count = 0;
 static uint32_t s_prev_total_rt = 0;
 

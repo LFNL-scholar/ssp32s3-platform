@@ -143,15 +143,19 @@ export function Presence({ themeTick }: { themeTick: string }) {
     setAwayTimeout(d.away_timeout_s ?? 120);
   };
 
-  const saveThresholds = async () => {
+  const saveThresholds = async (
+    enter = enterThresh,
+    exit = exitThresh,
+    timeout = awayTimeout,
+  ) => {
     if (!selectedDev) return;
     setErr(''); setMsg('');
     try {
       await api.updateDevice(selectedDev.id, {
         label: selectedDev.label,
-        enter_rssi: enterThresh,
-        exit_rssi: exitThresh,
-        away_timeout_s: awayTimeout,
+        enter_rssi: enter,
+        exit_rssi: exit,
+        away_timeout_s: timeout,
       });
       setMsg(`已保存「${selectedDev.label}」阈值配置`);
       loadState();
@@ -330,18 +334,52 @@ export function Presence({ themeTick }: { themeTick: string }) {
           <div class="calib-bar">
             <div class="calib-item">
               <label><span>进入阈值</span><strong class="num">{enterThresh} dBm</strong></label>
-              <input type="range" min={-90} max={-50} value={enterThresh} onInput={(e) => setEnterThresh(Number((e.target as HTMLInputElement).value))} />
+              <input
+                type="range"
+                min={-90}
+                max={-50}
+                disabled={!selectedDev}
+                value={enterThresh}
+                onInput={(e) => setEnterThresh(Number((e.target as HTMLInputElement).value))}
+                onChange={(e) => {
+                  const v = Number((e.target as HTMLInputElement).value);
+                  setEnterThresh(v);
+                  saveThresholds(v, exitThresh, awayTimeout);
+                }}
+              />
             </div>
             <div class="calib-item">
               <label><span>离开阈值</span><strong class="num">{exitThresh} dBm</strong></label>
-              <input type="range" min={-95} max={-60} value={exitThresh} onInput={(e) => setExitThresh(Number((e.target as HTMLInputElement).value))} />
+              <input
+                type="range"
+                min={-95}
+                max={-60}
+                disabled={!selectedDev}
+                value={exitThresh}
+                onInput={(e) => setExitThresh(Number((e.target as HTMLInputElement).value))}
+                onChange={(e) => {
+                  const v = Number((e.target as HTMLInputElement).value);
+                  setExitThresh(v);
+                  saveThresholds(enterThresh, v, awayTimeout);
+                }}
+              />
             </div>
             <div class="calib-item">
               <label><span>离家超时</span><strong class="num">{awayTimeout} 秒</strong></label>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                <input type="range" min={30} max={300} step={10} value={awayTimeout} onInput={(e) => setAwayTimeout(Number((e.target as HTMLInputElement).value))} />
-                <button class="btn btn-sm btn-primary" disabled={!selectedDev} onClick={saveThresholds}>应用</button>
-              </div>
+              <input
+                type="range"
+                min={30}
+                max={300}
+                step={10}
+                disabled={!selectedDev}
+                value={awayTimeout}
+                onInput={(e) => setAwayTimeout(Number((e.target as HTMLInputElement).value))}
+                onChange={(e) => {
+                  const v = Number((e.target as HTMLInputElement).value);
+                  setAwayTimeout(v);
+                  saveThresholds(enterThresh, exitThresh, v);
+                }}
+              />
             </div>
           </div>
         </div>

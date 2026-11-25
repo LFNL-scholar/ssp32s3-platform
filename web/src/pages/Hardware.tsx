@@ -56,23 +56,29 @@ export function Hardware({ themeTick }: { themeTick: string }) {
     });
   }, []);
 
-  const saveSettings = async (e: Event) => {
-    e.preventDefault();
-    if (!cfg) return;
+  const commitSettings = async (nextCfg: SystemSettings) => {
     setMsg(''); setErr('');
-    if ([35, 36, 37].includes(cfg.led_gpio)) {
+    if ([35, 36, 37].includes(nextCfg.led_gpio)) {
       return setErr('GPIO 35/36/37 被 Octal PSRAM 占用，严禁用于 LED');
     }
     try {
-      await api.putSettings(cfg);
-      const targetHost = `${cfg.hostname}.local`;
+      await api.putSettings(nextCfg);
+      const targetHost = `${nextCfg.hostname}.local`;
       if (location.hostname.endsWith('.local') && location.hostname !== targetHost) {
         setMsg(`配置已保存！mDNS 已变更为 http://${targetHost}，正在跳转...`);
         window.setTimeout(() => { location.href = `${location.protocol}//${targetHost}/`; }, 1500);
       } else {
-        setMsg('硬件配置已保存并立即生效');
+        setMsg('硬件配置已自动保存并生效');
       }
     } catch (ex: any) { setErr(ex.message); }
+  };
+
+  const handleInputEnter = (e: KeyboardEvent, nextCfg: SystemSettings) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitSettings(nextCfg);
+      (e.target as HTMLInputElement).blur();
+    }
   };
 
   const uploadOtaFile = (file: File, endpoint: '/api/ota' | '/api/ota/www', label: string) => {
@@ -254,18 +260,43 @@ export function Hardware({ themeTick }: { themeTick: string }) {
         <div class="card">
           <div class="card-head"><span class="card-title">主机名、LED 与时区</span><span class="tag">NVS</span></div>
           {cfg ? (
-            <form onSubmit={saveSettings}>
+            <div>
               <div class="field">
-                <label>mDNS 主机名（http://{cfg.hostname}.local）</label>
-                <input class="input" value={cfg.hostname} onInput={(e) => setCfg({ ...cfg, hostname: (e.target as HTMLInputElement).value })} />
+                <label>mDNS 主机名（http://{cfg.hostname}.local，回车保存）</label>
+                <input
+                  class="input"
+                  value={cfg.hostname}
+                  onInput={(e) => setCfg({ ...cfg, hostname: (e.target as HTMLInputElement).value })}
+                  onKeyDown={(e) => handleInputEnter(e, { ...cfg, hostname: (e.target as HTMLInputElement).value })}
+                />
               </div>
               <div class="field">
-                <label>WS2812B LED GPIO（禁用 35/36/37）</label>
-                <input class="input num" type="number" min={0} max={48} value={cfg.led_gpio} onInput={(e) => setCfg({ ...cfg, led_gpio: Number((e.target as HTMLInputElement).value) })} />
+                <label>WS2812B LED GPIO（禁用 35/36/37，回车保存）</label>
+                <input
+                  class="input num"
+                  type="number"
+                  min={0}
+                  max={48}
+                  value={cfg.led_gpio}
+                  onInput={(e) => setCfg({ ...cfg, led_gpio: Number((e.target as HTMLInputElement).value) })}
+                  onKeyDown={(e) => handleInputEnter(e, { ...cfg, led_gpio: Number((e.target as HTMLInputElement).value) })}
+                />
               </div>
               <div class="field">
                 <label>LED 亮度：<span class="num">{cfg.led_brightness}%</span></label>
-                <input type="range" min={0} max={100} value={cfg.led_brightness} style={{ width: '100%', accentColor: 'var(--black)' }} onInput={(e) => setCfg({ ...cfg, led_brightness: Number((e.target as HTMLInputElement).value) })} />
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={cfg.led_brightness}
+                  style={{ width: '100%', accentColor: 'var(--black)' }}
+                  onInput={(e) => setCfg({ ...cfg, led_brightness: Number((e.target as HTMLInputElement).value) })}
+                  onChange={(e) => {
+                    const next = { ...cfg, led_brightness: Number((e.target as HTMLInputElement).value) };
+                    setCfg(next);
+                    commitSettings(next);
+                  }}
+                />
               </div>
               <div class="switch-row" style={{ marginBottom: '10px' }}>
                 <div>
@@ -275,22 +306,38 @@ export function Hardware({ themeTick }: { themeTick: string }) {
                 <button
                   type="button"
                   class={`toggle ${cfg.led_idle_enabled ? 'on' : ''}`}
-                  onClick={() => setCfg({ ...cfg, led_idle_enabled: !cfg.led_idle_enabled })}
+                  onClick={() => {
+                    const next = { ...cfg, led_idle_enabled: !cfg.led_idle_enabled };
+                    setCfg(next);
+                    commitSettings(next);
+                  }}
                 />
               </div>
               <div class="field">
                 <label>全员离开时 LED 状态</label>
-                <select class="input" value={cfg.led_away_mode} onChange={(e) => setCfg({ ...cfg, led_away_mode: Number((e.target as HTMLSelectElement).value) })}>
+                <select
+                  class="input"
+                  value={cfg.led_away_mode}
+                  onChange={(e) => {
+                    const next = { ...cfg, led_away_mode: Number((e.target as HTMLSelectElement).value) };
+                    setCfg(next);
+                    commitSettings(next);
+                  }}
+                >
                   <option value={0}>暗红色常亮指示</option>
                   <option value={1}>完全熄灭</option>
                 </select>
               </div>
-              <div class="field">
-                <label>POSIX 时区（北京时间 CST-8）</label>
-                <input class="input" value={cfg.timezone} onInput={(e) => setCfg({ ...cfg, timezone: (e.target as HTMLInputElement).value })} />
+              <div class="field" style={{ marginBottom: 0 }}>
+                <label>POSIX 时区（北京时间 CST-8，回车保存）</label>
+                <input
+                  class="input"
+                  value={cfg.timezone}
+                  onInput={(e) => setCfg({ ...cfg, timezone: (e.target as HTMLInputElement).value })}
+                  onKeyDown={(e) => handleInputEnter(e, { ...cfg, timezone: (e.target as HTMLInputElement).value })}
+                />
               </div>
-              <button class="btn btn-primary" type="submit">保存硬件配置</button>
-            </form>
+            </div>
           ) : <div class="dim">加载中...</div>}
         </div>
 

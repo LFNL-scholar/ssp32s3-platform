@@ -4,6 +4,7 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "esp_attr.h"
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -25,7 +26,7 @@ typedef struct {
 } session_slot_t;
 
 static SemaphoreHandle_t s_mutex = NULL;
-static session_slot_t s_sessions[MAX_SESSIONS];
+static EXT_RAM_BSS_ATTR session_slot_t s_sessions[MAX_SESSIONS];
 static int s_fail_count = 0;
 static int64_t s_lockout_until_ms = 0;
 
