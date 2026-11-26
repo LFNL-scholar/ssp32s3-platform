@@ -1,21 +1,25 @@
 import { useEffect, useState } from 'preact/hooks';
-import { api, LampHistoryResp, LampState, PersonState, PresenceLogEntry, SystemSettings, TelemetryMsg, wsClient } from '../api/client';
+import { api, LampHistoryResp, LampState, PersonState, PresenceLogEntry, SystemSettings, TelemetryMsg, WolState, wsClient } from '../api/client';
 import { BarItem, LightingBarChart } from '../components/Charts';
 import { dateKey, fmtDuration, periodRange, summarize } from '../utils/lampStats';
 
 interface Props {
   onGoHardware: () => void;
   onGoLighting: () => void;
+  onGoWol: () => void;
   themeTick: string;
 }
 
 const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
 const DAY_SHORT = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
-export function Overview({ onGoHardware, onGoLighting, themeTick }: Props) {
+export function Overview({ onGoHardware, onGoLighting, onGoWol, themeTick }: Props) {
   const [now, setNow] = useState(() => new Date());
   const [tel, setTel] = useState<TelemetryMsg | null>(null);
   const [lamp, setLamp] = useState<LampState | null>(null);
+  const [wol, setWol] = useState<WolState | null>(null);
+  const [wolBusy, setWolBusy] = useState(false);
+  const [wolRipple, setWolRipple] = useState(0);
   const [persons, setPersons] = useState<PersonState[]>([]);
   const [nearbyCount, setNearbyCount] = useState(0);
   const [logs, setLogs] = useState<PresenceLogEntry[]>([]);
@@ -35,6 +39,7 @@ export function Overview({ onGoHardware, onGoLighting, themeTick }: Props) {
     api.bleScan().then((r) => setNearbyCount((r.devices || []).length)).catch(() => {});
     api.logs(8, 0).then((r) => setLogs(r.logs || [])).catch(() => {});
     api.getSettings().then(setCfg).catch(() => {});
+    api.wolState().then(setWol).catch(() => {});
   };
 
   useEffect(() => {
@@ -43,6 +48,7 @@ export function Overview({ onGoHardware, onGoLighting, themeTick }: Props) {
     const unsub = wsClient.subscribe((msg) => {
       if (msg.type === 'telemetry') setTel(msg);
       else if (msg.type === 'lamp_state') setLamp(msg);
+      else if (msg.type === 'wol_state') setWol(msg);
       else if (msg.type === 'presence_tick') setPersons(msg.persons);
       else if (msg.type === 'presence_event') {
         api.logs(8, 0).then((r) => setLogs(r.logs || [])).catch(() => {});
@@ -61,6 +67,17 @@ export function Overview({ onGoHardware, onGoLighting, themeTick }: Props) {
       setLamp(res);
     } catch { /* ignore */ }
     finally { setBusy(false); }
+  };
+
+  const doWolWake = async () => {
+    if (wolBusy) return;
+    setWolBusy(true);
+    setWolRipple((k) => k + 1);
+    try {
+      const res = await api.wolWake();
+      setWol(res);
+    } catch { /* ignore */ }
+    finally { setWolBusy(false); }
   };
 
   const toggleAuto = async (offAway: boolean, onArrive: boolean) => {
@@ -210,6 +227,55 @@ export function Overview({ onGoHardware, onGoLighting, themeTick }: Props) {
                 class={`toggle ${lamp?.automation.auto_on_on_arrive ? 'on' : ''}`}
                 onClick={() => toggleAuto(lamp?.automation.auto_off_on_away ?? false, !(lamp?.automation.auto_on_on_arrive ?? false))}
               />
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">远程开机 · WOL</span>
+            <span class={`tag ${wol?.waking ? 'red' : wol?.online ? 'dark' : ''}`}>
+              {wol?.waking ? '唤醒中' : wol?.online ? '已开机' : '已关机'}
+            </span>
+          </div>
+
+          <div class="power-center" style={{ padding: '6px 0' }}>
+            <div
+              class={`power-orb ${wol?.online ? 'is-on' : ''}`}
+              role="button"
+              tabIndex={0}
+              style={{ width: '112px', height: '112px', margin: '6px 0 14px', opacity: wolBusy ? 0.6 : 1 }}
+              onClick={doWolWake}
+            >
+              {wolRipple > 0 && <div key={wolRipple} class="rf-ripple firing" />}
+              <svg class="orb-svg" style={{ width: '26px', height: '26px', marginBottom: '5px' }} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                <rect x="3" y="4" width="18" height="12" rx="1.5" />
+                <path d="M8 20h8M12 16v4" />
+              </svg>
+              <div class="orb-label" style={{ fontSize: '11px', letterSpacing: '0.12em' }}>
+                <span class="orb-dot" />
+                <span>{wol?.waking ? 'WAKING...' : wol?.online ? 'ONLINE' : 'WAKE PC'}</span>
+              </div>
+            </div>
+            <div class="kpi-sub num">
+              {wol?.host.ip || '192.168.0.106'} · {wol?.host.mac || '9C:6B:00:5F:9C:7C'}
+            </div>
+          </div>
+
+          <div style={{ marginTop: '10px', borderTop: '1px dashed var(--line)', paddingTop: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '12px', color: 'var(--text-sec)' }}>
+              <span>MQTT 外网通道</span>
+              <span class={`tag ${wol?.mqtt.connected ? 'red' : ''}`}>
+                {wol?.mqtt.connected ? 'LIVE' : wol?.mqtt.enabled ? '重连中' : '未启用'}
+              </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '11.5px', color: 'var(--text-dim)' }}>
+              <span class="num">
+                {wol && wol.last_wake.sent > 0
+                  ? `上次 ${wol.last_wake.time_synced && wol.last_wake.epoch > 0 ? new Date(wol.last_wake.epoch * 1000).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5) : `+${wol.last_wake.uptime_s}s`}`
+                  : '尚未唤醒'}
+              </span>
+              <span style={{ color: 'var(--text)', cursor: 'pointer', fontWeight: 500 }} onClick={onGoWol}>远程开机详情 →</span>
             </div>
           </div>
         </div>

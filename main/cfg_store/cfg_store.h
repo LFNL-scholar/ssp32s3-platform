@@ -68,6 +68,25 @@ typedef struct {
     char token[33];           // 32-char hex persistent API key for Siri Shortcuts
 } cfg_siri_t;
 
+typedef struct {
+    char name[32];
+    char ip[16];
+    char mac[18];             // "XX:XX:XX:XX:XX:XX"
+    bool auto_wake_on_arrive;
+    uint16_t auto_cooldown_s;
+} cfg_wol_t;
+
+typedef struct {
+    bool enabled;
+    char host[64];
+    uint16_t port;
+    char client_id[64];       // Bemfa UID / private key or generic MQTT client_id
+    char username[32];
+    char password[64];
+    char wol_topic[48];
+    char lamp_topic[48];
+} cfg_mqtt_t;
+
 esp_err_t cfg_store_init(void);
 
 // SoftAP deterministic SSID & password
@@ -106,6 +125,14 @@ void cfg_siri_get(cfg_siri_t *out);
 esp_err_t cfg_siri_set_enabled(bool enabled);
 esp_err_t cfg_siri_regenerate_token(cfg_siri_t *out);
 bool cfg_siri_verify_token(const char *candidate);
+
+// Wake-on-LAN single host config
+void cfg_wol_get(cfg_wol_t *out);
+esp_err_t cfg_wol_set(const cfg_wol_t *in);
+
+// MQTT external bridge config
+void cfg_mqtt_get(cfg_mqtt_t *out);
+esp_err_t cfg_mqtt_set(const cfg_mqtt_t *in);
 
 // Factory reset (clears ssp_cfg + nimble_bond)
 esp_err_t cfg_store_factory_reset(void);

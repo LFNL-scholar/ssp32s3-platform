@@ -4,13 +4,14 @@ import { SetupWizard } from './pages/SetupWizard';
 import { Login } from './pages/Login';
 import { Overview } from './pages/Overview';
 import { Lamp } from './pages/Lamp';
+import { Wol } from './pages/Wol';
 import { Presence } from './pages/Presence';
 import { Topology } from './pages/Topology';
 import { Blueprint } from './pages/Blueprint';
 import { Hardware } from './pages/Hardware';
 import { applyThemeMode, getSavedThemeMode, resolveTheme, ThemeMode } from './utils/theme';
 
-type Tab = 'overview' | 'lighting' | 'presence' | 'topology' | 'blueprint' | 'hardware';
+type Tab = 'overview' | 'lighting' | 'wol' | 'presence' | 'topology' | 'blueprint' | 'hardware';
 
 export function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
@@ -94,6 +95,10 @@ export function App() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z" /></svg>
             <span>照明控制</span>
           </button>
+          <button class={`nav-item ${tab === 'wol' ? 'active' : ''}`} onClick={() => switchTab('wol')}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2v10" /><path d="M18.36 6.64a9 9 0 1 1-12.73 0" /></svg>
+            <span>远程开机</span>
+          </button>
           <button class={`nav-item ${tab === 'presence' ? 'active' : ''}`} onClick={() => switchTab('presence')}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="2" /><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14" /></svg>
             <span>空间感知</span>
@@ -145,8 +150,9 @@ export function App() {
       </aside>
 
       <main class={`workspace ${tab === 'overview' || tab === 'lighting' || tab === 'topology' || tab === 'blueprint' ? 'fit-screen' : ''}`}>
-        {tab === 'overview' && <Overview onGoHardware={() => switchTab('hardware')} onGoLighting={() => switchTab('lighting')} themeTick={themeTick} />}
+        {tab === 'overview' && <Overview onGoHardware={() => switchTab('hardware')} onGoLighting={() => switchTab('lighting')} onGoWol={() => switchTab('wol')} themeTick={themeTick} />}
         {tab === 'lighting' && <Lamp themeTick={themeTick} />}
+        {tab === 'wol' && <Wol hostLabel={hostLabel} />}
         {tab === 'presence' && <Presence themeTick={themeTick} />}
         {tab === 'topology' && <Topology />}
         {tab === 'blueprint' && <Blueprint />}

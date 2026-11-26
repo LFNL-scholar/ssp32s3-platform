@@ -394,7 +394,7 @@
   /* Full-Width & Full-Height Grids */
   .grid { display: grid; gap: 14px; width: 100%; }
   .grow { flex: 1; }
-  .g-cockpit-top { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .g-cockpit-top { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .g-cockpit-bot { grid-template-columns: minmax(0, 1.42fr) minmax(320px, 1fr); }
   .g-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .g-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -1174,6 +1174,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>
         <span>照明控制</span>
       </button>
+      <button class="nav-item" data-tab="wol">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2v10"/><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/></svg>
+        <span>远程开机</span>
+      </button>
       <button class="nav-item" data-tab="presence">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
         <span>空间感知</span>
@@ -1271,6 +1275,37 @@
                 <div class="switch-desc">检测到回家自动点亮</div>
               </div>
               <div class="toggle on" onclick="toggleSwitch(this, '回家自动开灯')"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Col 2: WOL Quick Control -->
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">远程开机 · WOL</span>
+            <span class="tag" id="ov-wol-tag">已关机</span>
+          </div>
+
+          <div class="power-center" style="padding: 6px 0;">
+            <div class="power-orb" id="ov-wol-orb" role="button" tabindex="0" style="width:118px; height:118px; margin: 10px 0 24px;" onclick="triggerWolWake('网页总控台')">
+              <div class="rf-ripple" id="ov-wol-ripple"></div>
+              <svg class="orb-svg" style="width:26px; height:26px; margin-bottom:5px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                <rect x="3" y="4" width="18" height="12" rx="1.5"/>
+                <path d="M8 20h8M12 16v4"/>
+              </svg>
+              <div class="orb-label" style="font-size:11px; letter-spacing:0.12em;"><span class="orb-dot"></span><span id="ov-wol-text">WAKE PC</span></div>
+            </div>
+            <div class="kpi-sub num" id="ov-wol-sub">192.168.0.106 · 9C:6B:00:5F:9C:7C</div>
+          </div>
+
+          <div style="margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; display:flex; flex-direction:column; gap:8px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; font-size:12px; color:var(--text-sec);">
+              <span>MQTT 外网通道</span>
+              <span class="tag red" id="ov-mqtt-tag">LIVE · bemfa</span>
+            </div>
+            <div style="display:flex; align-items:center; justify-content:space-between; font-size:11.5px; color:var(--text-dim);">
+              <span class="num" id="ov-wol-last">上次唤醒 09:12</span>
+              <span style="color:var(--text); cursor:pointer; font-weight:500;" onclick="switchTab('wol')">远程开机详情 →</span>
             </div>
           </div>
         </div>
@@ -1555,6 +1590,256 @@
             <div class="bar-chart-wrap" id="wrap-bar-lp">
               <svg id="bar-lp" class="chart-svg"></svg>
               <div class="chart-tip" id="tip-bar-lp"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== VIEW 2.5: 远程开机 (WOL + MQTT) ==================== -->
+    <section class="view" id="view-wol">
+      <div class="view-header">
+        <div>
+          <div class="eyebrow">WAKE-ON-LAN · UDP MAGIC PACKET · MQTT BRIDGE</div>
+          <h1 class="view-title">远程开机与外网桥接</h1>
+        </div>
+        <div class="btn-row">
+          <button class="btn" onclick="probeWolPreview()">立即探测状态</button>
+          <button class="btn" onclick="toggleWolMockState()" id="btn-wol-sim">模拟切换：已开机</button>
+          <button class="btn btn-primary" onclick="triggerWolWake('网页控制台')">发送魔术包开机</button>
+        </div>
+      </div>
+
+      <div class="grid g-4">
+        <div class="card">
+          <div class="card-head"><span class="card-title">目标主机状态</span><span class="tag" id="wol-kpi-tag">离线</span></div>
+          <div class="kpi-val" id="wol-kpi-state">已关机</div>
+          <div class="kpi-sub num" id="wol-kpi-target">192.168.0.106 · TCP 445/135 + ARP</div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">外网 MQTT 通道</span><span class="tag red" id="wol-mqtt-kpi-tag">已连接</span></div>
+          <div class="kpi-val" id="wol-mqtt-kpi-val">在线</div>
+          <div class="kpi-sub num" id="wol-mqtt-kpi-sub">bemfa.com:9501 · 开机 + 台灯双主题</div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">上次唤醒记录</span><span class="tag" id="wol-last-src">MQTT 外网</span></div>
+          <div class="kpi-val num" id="wol-last-time">09:12:04</div>
+          <div class="kpi-sub num" id="wol-last-sub">累计 18 包 · 端口 9 / 7 × 3 轮</div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">蓝牙到家自动开机</span><span class="tag" id="wol-auto-tag">已关闭</span></div>
+          <div class="kpi-val" id="wol-auto-val">待命</div>
+          <div class="kpi-sub">已开机自动跳过 · 冷却防抖 300 秒</div>
+        </div>
+      </div>
+
+      <div class="grid g-lamp">
+        <!-- Left: Power Core + BLE Auto-Wake -->
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">魔术包发射核心 · WOL</span>
+            <span class="tag" id="wol-core-tag">已关机</span>
+          </div>
+          <div class="power-center">
+            <div class="power-orb" id="wol-orb" role="button" tabindex="0" onclick="triggerWolWake('网页控制台')">
+              <div class="rf-ripple" id="wol-ripple"></div>
+              <svg class="orb-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                <rect x="3" y="4" width="18" height="12" rx="1.5"/>
+                <path d="M8 20h8M12 16v4"/>
+              </svg>
+              <div class="orb-label"><span class="orb-dot"></span><span id="wol-orb-text">WAKE PC</span></div>
+            </div>
+            <div class="kpi-sub" id="wol-core-hint">点击核心向局域网发送 102 字节 UDP 魔术包（18 包）</div>
+            <div style="width:100%; max-width:280px; margin-top:12px;">
+              <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-sec); margin-bottom:4px;">
+                <span id="wol-prog-label">探测就绪 · 后台每 10 秒核验 ARP</span>
+                <span class="num" id="wol-prog-pct">0%</span>
+              </div>
+              <div class="meter" style="margin-top:0;"><div class="meter-fill red" id="wol-prog-bar" style="width:0%"></div></div>
+            </div>
+          </div>
+
+          <div style="border-top:1px dashed var(--line); padding-top:14px; margin-top:10px;">
+            <div style="font-size:12.5px; font-weight:600; margin-bottom:4px;">蓝牙空间感知联动</div>
+            <div class="switch-row">
+              <div>
+                <div class="switch-title">到家自动开机</div>
+                <div class="switch-desc">首位成员回家时先探测主机状态，确认未开机才发包</div>
+              </div>
+              <div class="toggle" id="wol-auto-toggle" onclick="toggleWolAuto(this)"></div>
+            </div>
+            <div class="switch-row">
+              <div>
+                <div class="switch-title">防误触守卫状态</div>
+                <div class="switch-desc num">已开机跳过：开启 · 冷却间隔：300 秒</div>
+              </div>
+              <span class="tag dark">GUARD</span>
+            </div>
+          </div>
+
+          <div style="border-top:1px dashed var(--line); padding-top:12px; margin-top:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; font-size:11.5px; color:var(--text-dim);">
+              <span>协议：UDP 广播 + 单播</span>
+              <span class="num" style="color:var(--text); font-weight:600;">Port 9 / 7 · 102 Bytes</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Host Config + MQTT Bridge Config -->
+        <div class="grid" style="gap:14px;">
+          <!-- Card A: Target Host Config -->
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">目标主机配置（单机 · NVS 持久化）</span>
+              <span class="tag num" id="wol-mac-badge">9C:6B:00:5F:9C:7C</span>
+            </div>
+            <div class="grid g-2" style="gap:12px;">
+              <div class="field" style="margin-bottom:0;">
+                <label>主机备注名称</label>
+                <input class="input" id="wol-in-name" value="Windows 工作站" />
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <label>目标局域网 IP（用于单播与在线探测）</label>
+                <input class="input num" id="wol-in-ip" value="192.168.0.106" />
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <label>网卡 MAC 地址</label>
+                <input class="input num" id="wol-in-mac" value="9C:6B:00:5F:9C:7C" />
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <label>发包策略</label>
+                <input class="input num" value="子网广播 + 255.255.255.255 + 单播 (Port 9/7 × 3)" disabled style="opacity:0.75;" />
+              </div>
+            </div>
+            <div class="btn-row" style="justify-content:flex-end; margin-top:14px; padding-top:12px; border-top:1px dashed var(--line);">
+              <button class="btn" onclick="resetWolHostDefaults()">恢复默认主机</button>
+              <button class="btn btn-primary" onclick="saveWolHostPreview()">保存主机配置</button>
+            </div>
+          </div>
+
+          <!-- Card B: MQTT External Bridge -->
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">MQTT 外网通道（零域名远程开机 &amp; 控灯）</span>
+              <div class="btn-row" style="align-items:center;">
+                <span class="tag red" id="wol-mqtt-badge">已连接</span>
+                <div class="toggle on" id="wol-mqtt-toggle" onclick="toggleMqttPreview(this)"></div>
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; padding:8px 10px; background:var(--surface-sub); border:1px solid var(--line); border-radius:var(--radius-sm); flex-wrap:wrap;">
+              <span style="font-size:12px; color:var(--text-sec);">通用 MQTT 客户端 · 电脑关机后外网 4G/5G 仍可直接唤醒与控灯</span>
+              <button class="btn" style="padding:4px 10px; font-size:11.5px;" onclick="applyBemfaPreset()">一键填入巴法云预设</button>
+            </div>
+            <div class="grid g-3" style="gap:10px;">
+              <div class="field" style="margin-bottom:0; grid-column: span 2;">
+                <label>Broker 服务器地址</label>
+                <input class="input num" id="mqtt-in-host" value="bemfa.com" />
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <label>端口</label>
+                <input class="input num" id="mqtt-in-port" value="9501" />
+              </div>
+            </div>
+            <div class="grid g-3" style="gap:10px; margin-top:10px;">
+              <div class="field" style="margin-bottom:0;">
+                <label>Client ID / 巴法云私钥 (UID)</label>
+                <input class="input num" id="mqtt-in-cid" type="password" value="a1b2c3d4e5f678901234567890abcdef" />
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <label>远程开机主题 (WOL Topic)</label>
+                <input class="input num" id="mqtt-in-wol" value="pcwake006" />
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <label>台灯控制主题 (Lamp Topic)</label>
+                <input class="input num" id="mqtt-in-lamp" value="lamp002" />
+              </div>
+            </div>
+            <div class="grid g-2" style="gap:10px; margin-top:10px;">
+              <div class="field" style="margin-bottom:0;">
+                <label>用户名（巴法云留空，通用 Broker 选填）</label>
+                <input class="input" id="mqtt-in-user" placeholder="可选" />
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <label>密码（巴法云留空，通用 Broker 选填）</label>
+                <input class="input" id="mqtt-in-pass" type="password" placeholder="可选" />
+              </div>
+            </div>
+            <div class="btn-row" style="justify-content:space-between; align-items:center; margin-top:14px; padding-top:12px; border-top:1px dashed var(--line);">
+              <span class="kpi-sub">开机消息：<strong style="color:var(--text);">on / wake</strong> · 控灯消息：<strong style="color:var(--text);">on / off / toggle</strong></span>
+              <div class="btn-row">
+                <button class="btn" onclick="showToast('已触发 MQTT 重新连接...')">测试重连</button>
+                <button class="btn btn-primary" onclick="saveMqttPreview()">保存 MQTT 配置</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom Row: Shortcuts & Wake History -->
+      <div class="grid g-2">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">快捷指令接入（局域网 Siri + 外网巴法云 API）</span>
+            <span class="tag">复用 Siri Token</span>
+          </div>
+          <div class="kpi-sub">在家连 Wi-Fi 可直连 ESP32-S3；外出 4G/5G 时在 iPhone「快捷指令」调用巴法云 HTTPS 接口：</div>
+          <div class="siri-list">
+            <div class="siri-item">
+              <span class="siri-label">局域网开机</span>
+              <span class="siri-url num" id="wol-url-lan">http://esp32s3.local/api/siri/wol/wake?token=9f2a8c1d</span>
+              <button class="btn btn-primary" style="padding:4px 11px; font-size:12px;" onclick="copyTextEl('wol-url-lan', '局域网开机链接')">复制</button>
+            </div>
+            <div class="siri-item">
+              <span class="siri-label">局域网状态</span>
+              <span class="siri-url num" id="wol-url-status">http://esp32s3.local/api/siri/wol/status?token=9f2a8c1d</span>
+              <button class="btn" style="padding:4px 11px; font-size:12px;" onclick="copyTextEl('wol-url-status', '局域网状态链接')">复制</button>
+            </div>
+            <div class="siri-item">
+              <span class="siri-label">外网开机</span>
+              <span class="siri-url num" id="wol-url-mqtt-wake">https://apis.bemfa.com/va/postmsg?uid=&lt;私钥&gt;&amp;topic=pcwake006&amp;type=1&amp;msg=on</span>
+              <button class="btn btn-primary" style="padding:4px 11px; font-size:12px;" onclick="copyTextEl('wol-url-mqtt-wake', '外网巴法云开机接口')">复制</button>
+            </div>
+            <div class="siri-item">
+              <span class="siri-label">外网开灯</span>
+              <span class="siri-url num" id="wol-url-mqtt-lamp">https://apis.bemfa.com/va/postmsg?uid=&lt;私钥&gt;&amp;topic=lamp002&amp;type=1&amp;msg=on</span>
+              <button class="btn" style="padding:4px 11px; font-size:12px;" onclick="copyTextEl('wol-url-mqtt-lamp', '外网巴法云开灯接口')">复制</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">唤醒与外网桥接日志</span>
+            <span class="tag red">LIVE</span>
+          </div>
+          <div class="timeline" id="wol-timeline">
+            <div class="tl-item">
+              <div class="tl-dot red"></div>
+              <div style="flex:1;">
+                <div style="display:flex; justify-content:space-between;"><span class="tl-text">MQTT 外网 · 触发远程开机</span><span class="tl-time num">09:12:04</span></div>
+                <div class="tl-sub">主题 pcwake006 收到 on → 已发 18 个魔术包，约 10 秒后 ARP 核验上线</div>
+              </div>
+            </div>
+            <div class="tl-item">
+              <div class="tl-dot gray"></div>
+              <div style="flex:1;">
+                <div style="display:flex; justify-content:space-between;"><span class="tl-text">蓝牙到家 · 守卫跳过开机</span><span class="tl-time num">昨天 18:45:12</span></div>
+                <div class="tl-sub">检测到 Master 回家，但 192.168.0.106 已在线（TCP 445），跳过发包</div>
+              </div>
+            </div>
+            <div class="tl-item">
+              <div class="tl-dot"></div>
+              <div style="flex:1;">
+                <div style="display:flex; justify-content:space-between;"><span class="tl-text">MQTT 外网 · 远程开灯</span><span class="tl-time num">昨天 18:30:02</span></div>
+                <div class="tl-sub">主题 lamp002 收到 on → CC1101 已发射 433.92 MHz 脉冲</div>
+              </div>
+            </div>
+            <div class="tl-item">
+              <div class="tl-dot"></div>
+              <div style="flex:1;">
+                <div style="display:flex; justify-content:space-between;"><span class="tl-text">Siri 快捷指令 · 局域网开机</span><span class="tl-time num">昨天 08:10:33</span></div>
+                <div class="tl-sub">通过 /api/siri/wol/wake 触发，目标 9C:6B:00:5F:9C:7C</div>
+              </div>
             </div>
           </div>
         </div>
@@ -3068,6 +3353,204 @@
     el.classList.toggle('on');
     showToast(`${label}：${el.classList.contains('on') ? '已启用' : '已关闭'}`);
   }
+
+  // ==================== WOL & MQTT PREVIEW ENGINE ====================
+  let wolOnline = false;
+  let wolWaking = false;
+  let wolWakeTimer = null;
+
+  function renderWolUI() {
+    const ovOrb = document.getElementById('ov-wol-orb');
+    const ovTxt = document.getElementById('ov-wol-text');
+    const ovTag = document.getElementById('ov-wol-tag');
+    const coreOrb = document.getElementById('wol-orb');
+    const coreTxt = document.getElementById('wol-orb-text');
+    const coreTag = document.getElementById('wol-core-tag');
+    const kpiState = document.getElementById('wol-kpi-state');
+    const kpiTag = document.getElementById('wol-kpi-tag');
+    const simBtn = document.getElementById('btn-wol-sim');
+
+    if (ovOrb) ovOrb.classList.toggle('is-on', wolOnline);
+    if (coreOrb) coreOrb.classList.toggle('is-on', wolOnline);
+
+    if (wolWaking) {
+      if (ovTxt) ovTxt.textContent = 'WAKING...';
+      if (coreTxt) coreTxt.textContent = 'WAKING...';
+      if (ovTag) { ovTag.textContent = '唤醒中'; ovTag.className = 'tag red'; }
+      if (coreTag) { coreTag.textContent = '唤醒中'; coreTag.className = 'tag red'; }
+      if (kpiState) kpiState.textContent = '正在唤醒';
+      if (kpiTag) { kpiTag.textContent = '轮询中'; kpiTag.className = 'tag red'; }
+    } else if (wolOnline) {
+      if (ovTxt) ovTxt.textContent = 'ONLINE';
+      if (coreTxt) coreTxt.textContent = 'ONLINE';
+      if (ovTag) { ovTag.textContent = '已开机'; ovTag.className = 'tag dark'; }
+      if (coreTag) { coreTag.textContent = '已开机'; coreTag.className = 'tag dark'; }
+      if (kpiState) kpiState.textContent = '已开机';
+      if (kpiTag) { kpiTag.textContent = '在线'; kpiTag.className = 'tag dark'; }
+      if (simBtn) simBtn.textContent = '模拟切换：已关机';
+    } else {
+      if (ovTxt) ovTxt.textContent = 'WAKE PC';
+      if (coreTxt) coreTxt.textContent = 'WAKE PC';
+      if (ovTag) { ovTag.textContent = '已关机'; ovTag.className = 'tag'; }
+      if (coreTag) { coreTag.textContent = '已关机'; coreTag.className = 'tag'; }
+      if (kpiState) kpiState.textContent = '已关机';
+      if (kpiTag) { kpiTag.textContent = '离线'; kpiTag.className = 'tag'; }
+      if (simBtn) simBtn.textContent = '模拟切换：已开机';
+    }
+  }
+
+  function prependWolLog(title, sub, dotCls) {
+    const tl = document.getElementById('wol-timeline');
+    if (!tl) return;
+    const ts = new Date().toTimeString().slice(0, 8);
+    const item = document.createElement('div');
+    item.className = 'tl-item';
+    item.innerHTML = `<div class="tl-dot ${dotCls}"></div>
+      <div style="flex:1;">
+        <div style="display:flex; justify-content:space-between;"><span class="tl-text">${title}</span><span class="tl-time num">${ts}</span></div>
+        <div class="tl-sub">${sub}</div>
+      </div>`;
+    tl.prepend(item);
+    while (tl.children.length > 6) tl.removeChild(tl.lastChild);
+  }
+
+  function triggerWolWake(source) {
+    clearInterval(wolWakeTimer);
+    ['ov-wol-ripple', 'wol-ripple'].forEach(id => {
+      const r = document.getElementById(id);
+      if (r) { r.classList.remove('firing'); void r.offsetWidth; r.classList.add('firing'); }
+    });
+
+    const ts = new Date().toTimeString().slice(0, 8);
+    const ip = document.getElementById('wol-in-ip')?.value || '192.168.0.106';
+    const mac = document.getElementById('wol-in-mac')?.value || '9C:6B:00:5F:9C:7C';
+    const lastTimeEl = document.getElementById('wol-last-time');
+    const lastSrcEl = document.getElementById('wol-last-src');
+    const ovLastEl = document.getElementById('ov-wol-last');
+    if (lastTimeEl) lastTimeEl.textContent = ts;
+    if (lastSrcEl) lastSrcEl.textContent = source;
+    if (ovLastEl) ovLastEl.textContent = '上次唤醒 ' + ts.slice(0, 5);
+
+    prependWolLog(`${source} · 发送魔术包`, `已向 ${ip} (${mac}) 发送 18 个 UDP 魔术包`, 'red');
+    prependTimeline(`${source} · 远程开机`, `已发送 18 个 WOL 魔术包 -> ${mac}`, 'red');
+
+    if (wolOnline) {
+      showToast('已再次发送 18 个魔术包（主机当前在线）');
+      return;
+    }
+
+    wolWaking = true;
+    renderWolUI();
+    showToast('已发出 18 个魔术包，正在轮询主机上线...');
+
+    let pct = 15;
+    const bar = document.getElementById('wol-prog-bar');
+    const pctEl = document.getElementById('wol-prog-pct');
+    const lbl = document.getElementById('wol-prog-label');
+    if (bar) bar.style.width = pct + '%';
+    if (pctEl) pctEl.textContent = pct + '%';
+    if (lbl) lbl.textContent = '已发包 · 正在 ARP / TCP 轮询上线...';
+
+    wolWakeTimer = setInterval(() => {
+      pct = Math.min(100, pct + 28);
+      if (bar) bar.style.width = pct + '%';
+      if (pctEl) pctEl.textContent = pct + '%';
+      if (pct >= 100) {
+        clearInterval(wolWakeTimer);
+        wolWaking = false;
+        wolOnline = true;
+        renderWolUI();
+        if (lbl) lbl.textContent = 'ARP 核验通过 · 主机已上线';
+        prependWolLog('状态探测 · 主机已开机', `${ip} 响应 TCP 445 / ARP 核验匹配 ${mac}`, 'dark');
+        showToast('检测到电脑已成功开机');
+      }
+    }, 850);
+  }
+
+  function probeWolPreview() {
+    showToast(wolOnline ? '探测完成：主机在线（TCP 445 / ARP 匹配）' : '探测完成：主机离线（可发送魔术包唤醒）');
+  }
+
+  function toggleWolMockState() {
+    clearInterval(wolWakeTimer);
+    wolWaking = false;
+    wolOnline = !wolOnline;
+    renderWolUI();
+    const bar = document.getElementById('wol-prog-bar');
+    const pctEl = document.getElementById('wol-prog-pct');
+    const lbl = document.getElementById('wol-prog-label');
+    if (bar) bar.style.width = wolOnline ? '100%' : '0%';
+    if (pctEl) pctEl.textContent = wolOnline ? '100%' : '0%';
+    if (lbl) lbl.textContent = wolOnline ? '主机在线 · 后台每 10 秒核验 ARP' : '主机离线 · 点击上方核心可唤醒';
+    showToast(wolOnline ? '预览状态已切为：电脑已开机' : '预览状态已切为：电脑已关机');
+  }
+
+  function toggleWolAuto(el) {
+    el.classList.toggle('on');
+    const on = el.classList.contains('on');
+    const tag = document.getElementById('wol-auto-tag');
+    const val = document.getElementById('wol-auto-val');
+    if (tag) { tag.textContent = on ? '已开启' : '已关闭'; tag.className = 'tag ' + (on ? 'dark' : ''); }
+    if (val) val.textContent = on ? '守卫生效中' : '待命';
+    showToast(on ? '到家自动开机已启用（已开机自动跳过）' : '到家自动开机已关闭');
+  }
+
+  function saveWolHostPreview() {
+    const ip = document.getElementById('wol-in-ip').value.trim();
+    const mac = document.getElementById('wol-in-mac').value.trim().toUpperCase();
+    document.getElementById('wol-mac-badge').textContent = mac;
+    document.getElementById('wol-kpi-target').textContent = `${ip} · TCP 445/135 + ARP`;
+    document.getElementById('ov-wol-sub').textContent = `${ip} · ${mac}`;
+    showToast('目标主机配置已保存（预览）');
+  }
+
+  function resetWolHostDefaults() {
+    document.getElementById('wol-in-name').value = 'Windows 工作站';
+    document.getElementById('wol-in-ip').value = '192.168.0.106';
+    document.getElementById('wol-in-mac').value = '9C:6B:00:5F:9C:7C';
+    saveWolHostPreview();
+  }
+
+  function applyBemfaPreset() {
+    document.getElementById('mqtt-in-host').value = 'bemfa.com';
+    document.getElementById('mqtt-in-port').value = '9501';
+    document.getElementById('mqtt-in-user').value = '';
+    document.getElementById('mqtt-in-pass').value = '';
+    showToast('已填入巴法云预设（bemfa.com:9501）');
+  }
+
+  function toggleMqttPreview(el) {
+    el.classList.toggle('on');
+    const on = el.classList.contains('on');
+    const b = document.getElementById('wol-mqtt-badge');
+    const kt = document.getElementById('wol-mqtt-kpi-tag');
+    const kv = document.getElementById('wol-mqtt-kpi-val');
+    const ov = document.getElementById('ov-mqtt-tag');
+    if (b) { b.textContent = on ? '已连接' : '已禁用'; b.className = 'tag ' + (on ? 'red' : ''); }
+    if (kt) { kt.textContent = on ? '已连接' : '已禁用'; kt.className = 'tag ' + (on ? 'red' : ''); }
+    if (kv) kv.textContent = on ? '在线' : '关闭';
+    if (ov) { ov.textContent = on ? 'LIVE · bemfa' : '已关闭'; ov.className = 'tag ' + (on ? 'red' : ''); }
+    showToast(on ? 'MQTT 外网通道已启用' : 'MQTT 外网通道已关闭');
+  }
+
+  function saveMqttPreview() {
+    const host = document.getElementById('mqtt-in-host').value.trim();
+    const port = document.getElementById('mqtt-in-port').value.trim();
+    const wolT = document.getElementById('mqtt-in-wol').value.trim();
+    const lampT = document.getElementById('mqtt-in-lamp').value.trim();
+    document.getElementById('wol-mqtt-kpi-sub').textContent = `${host}:${port} · ${wolT} / ${lampT}`;
+    document.getElementById('wol-url-mqtt-wake').textContent = `https://apis.bemfa.com/va/postmsg?uid=<私钥>&topic=${wolT}&type=1&msg=on`;
+    document.getElementById('wol-url-mqtt-lamp').textContent = `https://apis.bemfa.com/va/postmsg?uid=<私钥>&topic=${lampT}&type=1&msg=on`;
+    showToast('MQTT 配置已保存并应用（预览）');
+  }
+
+  function copyTextEl(id, label) {
+    const txt = document.getElementById(id)?.textContent || '';
+    if (navigator.clipboard && txt) navigator.clipboard.writeText(txt).catch(() => {});
+    showToast(`已复制「${label}」`);
+  }
+
+  renderWolUI();
 
   let otaSimTimer = null;
   function simulateOta(target) {

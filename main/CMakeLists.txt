@@ -17,6 +17,8 @@ idf_component_register(
         "lamp_ctrl/rf_storage.c"
         "lamp_ctrl/lamp_history.c"
         "lamp_ctrl/lamp_controller.c"
+        "wol_mgr/wol_mgr.c"
+        "mqtt_bridge/mqtt_bridge.c"
     INCLUDE_DIRS
         "."
         "cfg_store"
@@ -29,6 +31,8 @@ idf_component_register(
         "ota_mgr"
         "web_server"
         "lamp_ctrl"
+        "wol_mgr"
+        "mqtt_bridge"
     REQUIRES
         nvs_flash
         esp_wifi
@@ -47,6 +51,7 @@ idf_component_register(
         bt
         json
         lwip
+        mqtt
 )
 
 if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../web/dist")

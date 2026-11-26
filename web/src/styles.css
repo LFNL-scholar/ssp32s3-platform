@@ -220,7 +220,7 @@ html {
 /* ==================== GRIDS ==================== */
 .grid { display: grid; gap: 12px; width: 100%; }
 .grow { flex: 1; }
-.g-cockpit-top { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.g-cockpit-top { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .g-cockpit-bot { grid-template-columns: minmax(0, 1.42fr) minmax(320px, 1fr); }
 .g-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .g-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -388,6 +388,13 @@ html {
 .power-orb.is-on .orb-label { color: var(--inv-text); }
 .orb-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
 .power-orb.is-on .orb-dot { background: var(--red); }
+
+.rf-ripple { position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid var(--red); opacity: 0; pointer-events: none; }
+.rf-ripple.firing { animation: ripple 0.7s cubic-bezier(0.1, 0.7, 0.2, 1) forwards; }
+@keyframes ripple {
+  0% { transform: scale(1); opacity: 0.9; }
+  100% { transform: scale(1.42); opacity: 0; }
+}
 
 /* ==================== SWITCHES ==================== */
 .switch-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px dashed var(--line); gap: 12px; }

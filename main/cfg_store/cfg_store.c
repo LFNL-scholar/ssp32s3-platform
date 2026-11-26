@@ -23,6 +23,8 @@ static const char *TAG = "cfg_store";
 #define KEY_PERSONS  "persons"
 #define KEY_DEVICES  "devices"
 #define KEY_SIRI     "siri"
+#define KEY_WOL      "wol"
+#define KEY_MQTT     "mqtt"
 
 typedef struct {
     cfg_wifi_t wifi;
@@ -31,6 +33,8 @@ typedef struct {
     cfg_person_t persons[CFG_MAX_PERSONS];
     cfg_device_t devices[CFG_MAX_DEVICES];
     cfg_siri_t siri;
+    cfg_wol_t wol;
+    cfg_mqtt_t mqtt;
 } cfg_cache_t;
 
 static cfg_cache_t s_cache;
@@ -49,6 +53,26 @@ static void settings_set_defaults(cfg_settings_t *s)
     strlcpy(s->ntp_server1, "ntp.aliyun.com", sizeof(s->ntp_server1));
     strlcpy(s->ntp_server2, "cn.pool.ntp.org", sizeof(s->ntp_server2));
     strlcpy(s->timezone, "CST-8", sizeof(s->timezone));
+}
+
+static void wol_set_defaults(cfg_wol_t *w)
+{
+    memset(w, 0, sizeof(*w));
+    strlcpy(w->name, "Windows 工作站", sizeof(w->name));
+    strlcpy(w->ip, "192.168.0.106", sizeof(w->ip));
+    strlcpy(w->mac, "9C:6B:00:5F:9C:7C", sizeof(w->mac));
+    w->auto_wake_on_arrive = false;
+    w->auto_cooldown_s = 300;
+}
+
+static void mqtt_set_defaults(cfg_mqtt_t *m)
+{
+    memset(m, 0, sizeof(*m));
+    m->enabled = false;
+    strlcpy(m->host, "bemfa.com", sizeof(m->host));
+    m->port = 9501;
+    strlcpy(m->wol_topic, "pcwake006", sizeof(m->wol_topic));
+    strlcpy(m->lamp_topic, "lamp002", sizeof(m->lamp_topic));
 }
 
 static void generate_siri_token(char out[33])
@@ -120,6 +144,12 @@ esp_err_t cfg_store_init(void)
         s_cache.siri.enabled = true;
         generate_siri_token(s_cache.siri.token);
         nvs_write_blob(KEY_SIRI, &s_cache.siri, sizeof(s_cache.siri));
+    }
+    if (nvs_read_blob_exact(KEY_WOL, &s_cache.wol, sizeof(s_cache.wol)) != ESP_OK) {
+        wol_set_defaults(&s_cache.wol);
+    }
+    if (nvs_read_blob_exact(KEY_MQTT, &s_cache.mqtt, sizeof(s_cache.mqtt)) != ESP_OK) {
+        mqtt_set_defaults(&s_cache.mqtt);
     }
 
     xSemaphoreGive(s_mutex);
@@ -613,6 +643,60 @@ bool cfg_siri_verify_token(const char *candidate)
     return diff == 0;
 }
 
+void cfg_wol_get(cfg_wol_t *out)
+{
+    if (!out) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    *out = s_cache.wol;
+    xSemaphoreGive(s_mutex);
+}
+
+esp_err_t cfg_wol_set(const cfg_wol_t *in)
+{
+    if (!in || in->mac[0] == '\0') return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    cfg_wol_t next = *in;
+    if (next.name[0] == '\0') {
+        strlcpy(next.name, "Windows 工作站", sizeof(next.name));
+    }
+    if (next.auto_cooldown_s < 30) {
+        next.auto_cooldown_s = 30;
+    }
+    esp_err_t err = nvs_write_blob(KEY_WOL, &next, sizeof(next));
+    if (err == ESP_OK) {
+        s_cache.wol = next;
+    }
+    xSemaphoreGive(s_mutex);
+    return err;
+}
+
+void cfg_mqtt_get(cfg_mqtt_t *out)
+{
+    if (!out) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    *out = s_cache.mqtt;
+    xSemaphoreGive(s_mutex);
+}
+
+esp_err_t cfg_mqtt_set(const cfg_mqtt_t *in)
+{
+    if (!in) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    cfg_mqtt_t next = *in;
+    if (next.host[0] == '\0') {
+        strlcpy(next.host, "bemfa.com", sizeof(next.host));
+    }
+    if (next.port == 0) {
+        next.port = 9501;
+    }
+    esp_err_t err = nvs_write_blob(KEY_MQTT, &next, sizeof(next));
+    if (err == ESP_OK) {
+        s_cache.mqtt = next;
+    }
+    xSemaphoreGive(s_mutex);
+    return err;
+}
+
 esp_err_t cfg_store_factory_reset(void)
 {
     xSemaphoreTake(s_mutex, portMAX_DELAY);
@@ -639,6 +723,8 @@ esp_err_t cfg_store_factory_reset(void)
     }
     memset(&s_cache, 0, sizeof(s_cache));
     settings_set_defaults(&s_cache.settings);
+    wol_set_defaults(&s_cache.wol);
+    mqtt_set_defaults(&s_cache.mqtt);
     xSemaphoreGive(s_mutex);
     ESP_LOGW(TAG, "Factory reset complete");
     return ESP_OK;

@@ -24,6 +24,8 @@
 #include "ota_mgr.h"
 #include "lamp_controller.h"
 #include "lamp_history.h"
+#include "wol_mgr.h"
+#include "mqtt_bridge.h"
 
 static const char *TAG = "web_server";
 
@@ -1183,6 +1185,183 @@ static esp_err_t handle_lamp_siri_config(httpd_req_t *req)
     return send_json(req, "200 OK", o);
 }
 
+// ---------- WOL & MQTT Bridge Handlers ----------
+
+static esp_err_t handle_wol_state(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    return send_json(req, "200 OK", wol_mgr_build_state_json());
+}
+
+static esp_err_t handle_wol_config(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *body = read_json_body(req, 512);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    cfg_wol_t cfg;
+    cfg_wol_get(&cfg);
+
+    const cJSON *v;
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "name"))) && v->valuestring[0]) {
+        strlcpy(cfg.name, v->valuestring, sizeof(cfg.name));
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "ip")))) {
+        strlcpy(cfg.ip, v->valuestring, sizeof(cfg.ip));
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "mac"))) && v->valuestring[0]) {
+        uint8_t mac_bytes[6];
+        if (!wol_mgr_parse_mac(v->valuestring, mac_bytes)) {
+            cJSON_Delete(body);
+            return send_err(req, "400 Bad Request", "MAC 地址格式无效");
+        }
+        wol_mgr_format_mac(mac_bytes, cfg.mac, sizeof(cfg.mac));
+    }
+    if (cJSON_IsBool((v = cJSON_GetObjectItem(body, "auto_wake_on_arrive")))) {
+        cfg.auto_wake_on_arrive = cJSON_IsTrue(v);
+    }
+    if (cJSON_IsNumber((v = cJSON_GetObjectItem(body, "auto_cooldown_s")))) {
+        int cd = (int)v->valuedouble;
+        if (cd < 30) cd = 30;
+        if (cd > 86400) cd = 86400;
+        cfg.auto_cooldown_s = (uint16_t)cd;
+    }
+    cJSON_Delete(body);
+
+    esp_err_t err = cfg_wol_set(&cfg);
+    if (err != ESP_OK) return send_err(req, "500 Internal Server Error", "保存 WOL 配置失败");
+
+    wol_mgr_broadcast_state();
+    cJSON *o = wol_mgr_build_state_json();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_wol_wake(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    int sent = 0;
+    esp_err_t err = wol_mgr_wake("网页控制台", &sent);
+    if (err != ESP_OK) {
+        return send_err(req, "500 Internal Server Error", "发送魔术包失败（请检查 MAC 格式与 Wi-Fi 连接）");
+    }
+    cJSON *o = wol_mgr_build_state_json();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddNumberToObject(o, "sent", sent);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_wol_probe(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    wol_mgr_probe_now();
+    cJSON *o = wol_mgr_build_state_json();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_mqtt_config(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *body = read_json_body(req, 1024);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    cfg_mqtt_t cfg;
+    cfg_mqtt_get(&cfg);
+
+    const cJSON *v;
+    if (cJSON_IsBool((v = cJSON_GetObjectItem(body, "enabled")))) {
+        cfg.enabled = cJSON_IsTrue(v);
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "host")))) {
+        strlcpy(cfg.host, v->valuestring, sizeof(cfg.host));
+    }
+    if (cJSON_IsNumber((v = cJSON_GetObjectItem(body, "port")))) {
+        int p = (int)v->valuedouble;
+        if (p > 0 && p <= 65535) cfg.port = (uint16_t)p;
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "client_id")))) {
+        strlcpy(cfg.client_id, v->valuestring, sizeof(cfg.client_id));
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "username")))) {
+        strlcpy(cfg.username, v->valuestring, sizeof(cfg.username));
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "password")))) {
+        strlcpy(cfg.password, v->valuestring, sizeof(cfg.password));
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "wol_topic")))) {
+        strlcpy(cfg.wol_topic, v->valuestring, sizeof(cfg.wol_topic));
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "lamp_topic")))) {
+        strlcpy(cfg.lamp_topic, v->valuestring, sizeof(cfg.lamp_topic));
+    }
+    cJSON_Delete(body);
+
+    esp_err_t err = cfg_mqtt_set(&cfg);
+    if (err != ESP_OK) return send_err(req, "500 Internal Server Error", "保存 MQTT 配置失败");
+
+    mqtt_bridge_reload();
+    cJSON *o = wol_mgr_build_state_json();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_mqtt_reconnect(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    mqtt_bridge_reload();
+    cJSON *o = wol_mgr_build_state_json();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_siri_wol_wake(httpd_req_t *req)
+{
+    char qbuf[192] = {0};
+    httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf));
+
+    char token[64] = {0};
+    if (!extract_siri_token(req, qbuf, token, sizeof(token)) || !cfg_siri_verify_token(token)) {
+        return send_err(req, "401 Unauthorized", "Siri 快捷指令未启用或密钥无效");
+    }
+
+    int sent = 0;
+    esp_err_t err = wol_mgr_wake("Siri 快捷指令", &sent);
+    if (err != ESP_OK) {
+        return send_err(req, "500 Internal Server Error", "发送魔术包失败");
+    }
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddNumberToObject(o, "sent", sent);
+    cJSON_AddBoolToObject(o, "online", wol_mgr_is_online());
+    cJSON_AddStringToObject(o, "message", "已发送电脑开机信号");
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_siri_wol_status(httpd_req_t *req)
+{
+    char qbuf[192] = {0};
+    httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf));
+
+    char token[64] = {0};
+    if (!extract_siri_token(req, qbuf, token, sizeof(token)) || !cfg_siri_verify_token(token)) {
+        return send_err(req, "401 Unauthorized", "Siri 快捷指令未启用或密钥无效");
+    }
+
+    cfg_wol_t cfg;
+    cfg_wol_get(&cfg);
+    bool online = wol_mgr_probe_now();
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddBoolToObject(o, "online", online);
+    cJSON_AddStringToObject(o, "ip", cfg.ip);
+    cJSON_AddStringToObject(o, "mac", cfg.mac);
+    cJSON_AddStringToObject(o, "message", online ? "电脑当前已开机" : "电脑当前已关机");
+    return send_json(req, "200 OK", o);
+}
+
 // ---------- WebSocket Handler ----------
 
 #ifdef CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
@@ -1413,7 +1592,7 @@ esp_err_t web_server_start(void)
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port = 80;
-    cfg.max_uri_handlers = 48;
+    cfg.max_uri_handlers = 64;
     cfg.max_open_sockets = 10;
     cfg.lru_purge_enable = true;
     cfg.uri_match_fn = httpd_uri_match_wildcard;
@@ -1469,6 +1648,15 @@ esp_err_t web_server_start(void)
         { .uri = "/api/lamp/siri",             .method = HTTP_GET,    .handler = handle_lamp_siri },
         { .uri = "/api/lamp/siri",             .method = HTTP_POST,   .handler = handle_lamp_siri },
         { .uri = "/api/lamp/siri/config",      .method = HTTP_PUT,    .handler = handle_lamp_siri_config },
+        { .uri = "/api/wol/state",             .method = HTTP_GET,    .handler = handle_wol_state },
+        { .uri = "/api/wol/config",            .method = HTTP_PUT,    .handler = handle_wol_config },
+        { .uri = "/api/wol/wake",              .method = HTTP_POST,   .handler = handle_wol_wake },
+        { .uri = "/api/wol/probe",             .method = HTTP_POST,   .handler = handle_wol_probe },
+        { .uri = "/api/mqtt/config",           .method = HTTP_PUT,    .handler = handle_mqtt_config },
+        { .uri = "/api/mqtt/reconnect",        .method = HTTP_POST,   .handler = handle_mqtt_reconnect },
+        { .uri = "/api/siri/wol/wake",         .method = HTTP_GET,    .handler = handle_siri_wol_wake },
+        { .uri = "/api/siri/wol/wake",         .method = HTTP_POST,   .handler = handle_siri_wol_wake },
+        { .uri = "/api/siri/wol/status",       .method = HTTP_GET,    .handler = handle_siri_wol_status },
     };
 
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {

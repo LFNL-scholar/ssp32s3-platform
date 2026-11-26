@@ -167,13 +167,61 @@ export interface LampHistoryResp {
   records: [number, number, number, number][];
 }
 
+export interface WolLogEntry {
+  seq: number;
+  epoch: number;
+  uptime_s: number;
+  time_synced: boolean;
+  title: string;
+  detail: string;
+  level: 'red' | 'dark' | 'gray' | string;
+}
+
+export interface WolState {
+  host: {
+    name: string;
+    ip: string;
+    mac: string;
+    auto_wake_on_arrive: boolean;
+    auto_cooldown_s: number;
+  };
+  online: boolean;
+  waking: boolean;
+  wake_progress: number;
+  last_wake: {
+    epoch: number;
+    uptime_s: number;
+    time_synced: boolean;
+    source: string;
+    sent: number;
+  };
+  logs: WolLogEntry[];
+  mqtt: {
+    enabled: boolean;
+    connected: boolean;
+    host: string;
+    port: number;
+    client_id: string;
+    username: string;
+    has_password: boolean;
+    wol_topic: string;
+    lamp_topic: string;
+    last_error: string;
+  };
+  siri: {
+    enabled: boolean;
+    token: string;
+  };
+}
+
 export type WsMessage =
   | TelemetryMsg
   | { type: 'presence_tick'; persons: PersonState[] }
   | { type: 'presence_event'; event: string; person_id: number; person_name: string; device: string; rssi: number; epoch: number }
   | { type: 'pair_result'; status: 'success' | 'timeout' | 'cancelled' | 'error'; device_id?: number; label?: string; reason?: string }
   | ({ type: 'lamp_state' } & LampState)
-  | { type: 'lamp_learn'; status: 'listening' | 'captured' | 'timeout' | 'error'; pulses?: number; duration_ms?: number; error?: string };
+  | { type: 'lamp_learn'; status: 'listening' | 'captured' | 'timeout' | 'error'; pulses?: number; duration_ms?: number; error?: string }
+  | ({ type: 'wol_state' } & WolState);
 
 let onUnauthorized: (() => void) | null = null;
 export function setUnauthorizedHandler(fn: () => void) {
@@ -247,6 +295,23 @@ export const api = {
   lampLearnCancel: () => req<{ ok: boolean }>('/api/lamp/learn/cancel', { method: 'POST' }),
   lampSiriConfig: (body: { enabled?: boolean; regenerate?: boolean }) =>
     req<LampState & { ok: boolean }>('/api/lamp/siri/config', { method: 'PUT', body: JSON.stringify(body) }),
+
+  wolState: () => req<WolState>('/api/wol/state'),
+  wolConfig: (body: { name?: string; ip?: string; mac?: string; auto_wake_on_arrive?: boolean; auto_cooldown_s?: number }) =>
+    req<WolState & { ok: boolean }>('/api/wol/config', { method: 'PUT', body: JSON.stringify(body) }),
+  wolWake: () => req<WolState & { ok: boolean; sent: number }>('/api/wol/wake', { method: 'POST' }),
+  wolProbe: () => req<WolState & { ok: boolean }>('/api/wol/probe', { method: 'POST' }),
+  mqttConfig: (body: {
+    enabled?: boolean;
+    host?: string;
+    port?: number;
+    client_id?: string;
+    username?: string;
+    password?: string;
+    wol_topic?: string;
+    lamp_topic?: string;
+  }) => req<WolState & { ok: boolean }>('/api/mqtt/config', { method: 'PUT', body: JSON.stringify(body) }),
+  mqttReconnect: () => req<WolState & { ok: boolean }>('/api/mqtt/reconnect', { method: 'POST' }),
 };
 
 type Listener = (msg: WsMessage) => void;
