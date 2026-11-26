@@ -87,6 +87,12 @@ typedef struct {
     char lamp_topic[48];
 } cfg_mqtt_t;
 
+typedef struct {
+    bool enabled;
+    char url[128];            // e.g. "wss://s3-console.xxx.workers.dev/tunnel/connect"
+    char secret[64];          // shared tunnel secret
+} cfg_tunnel_t;
+
 esp_err_t cfg_store_init(void);
 
 // SoftAP deterministic SSID & password
@@ -133,6 +139,10 @@ esp_err_t cfg_wol_set(const cfg_wol_t *in);
 // MQTT external bridge config
 void cfg_mqtt_get(cfg_mqtt_t *out);
 esp_err_t cfg_mqtt_set(const cfg_mqtt_t *in);
+
+// Cloudflare Workers outbound WSS tunnel config
+void cfg_tunnel_get(cfg_tunnel_t *out);
+esp_err_t cfg_tunnel_set(const cfg_tunnel_t *in);
 
 // Factory reset (clears ssp_cfg + nimble_bond)
 esp_err_t cfg_store_factory_reset(void);

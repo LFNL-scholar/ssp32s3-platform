@@ -34,6 +34,11 @@ export function Wol({ hostLabel }: Props) {
   const [mqttPass, setMqttPass] = useState('');
   const [mqttDirty, setMqttDirty] = useState(false);
 
+  // Cloud Tunnel form state
+  const [tunnelUrl, setTunnelUrl] = useState('');
+  const [tunnelSecret, setTunnelSecret] = useState('');
+  const [tunnelDirty, setTunnelDirty] = useState(false);
+
   const flash = (text: string, err = false) => {
     setNotice({ text, err });
     window.setTimeout(() => {
@@ -54,6 +59,9 @@ export function Wol({ hostLabel }: Props) {
       setMqttWolTopic(s.mqtt.wol_topic);
       setMqttLampTopic(s.mqtt.lamp_topic);
       setMqttUser(s.mqtt.username);
+    }
+    if ((force || !tunnelDirty) && s.tunnel) {
+      setTunnelUrl(s.tunnel.url || '');
     }
   };
 
@@ -202,6 +210,54 @@ export function Wol({ hostLabel }: Props) {
     }
   };
 
+  const toggleTunnelEnabled = async () => {
+    if (!st?.tunnel) return;
+    const next = !st.tunnel.enabled;
+    try {
+      const res = await api.tunnelConfig({ enabled: next });
+      setSt(res);
+      flash(next ? 'Cloudflare 外网隧道已启用' : 'Cloudflare 外网隧道已关闭');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : '切换云端隧道失败', true);
+    }
+  };
+
+  const saveTunnel = async () => {
+    setBusy(true);
+    try {
+      const payload: { enabled?: boolean; url?: string; secret?: string } = {
+        enabled: st?.tunnel?.enabled ?? true,
+        url: tunnelUrl.trim(),
+      };
+      if (tunnelSecret.trim() !== '') {
+        payload.secret = tunnelSecret.trim();
+      }
+      const res = await api.tunnelConfig(payload);
+      setSt(res);
+      setTunnelSecret('');
+      setTunnelDirty(false);
+      hydrateForms(res, true);
+      flash('云端隧道配置已保存并重连');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : '保存云端隧道失败', true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reconnectTunnel = async () => {
+    setBusy(true);
+    try {
+      const res = await api.tunnelReconnect();
+      setSt(res);
+      flash('已触发云端隧道重新连接');
+    } catch (e) {
+      flash(e instanceof Error ? e.message : '重连失败', true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const copyText = (text: string, label: string) => {
     if (navigator.clipboard) {
       navigator.clipboard.writeText(text).catch(() => {});
@@ -215,6 +271,11 @@ export function Wol({ hostLabel }: Props) {
   const autoOn = st?.host.auto_wake_on_arrive ?? false;
   const mqttEn = st?.mqtt.enabled ?? false;
   const mqttConn = st?.mqtt.connected ?? false;
+  const tunnelEn = st?.tunnel?.enabled ?? false;
+  const tunnelConn = st?.tunnel?.connected ?? false;
+  const tunnelPublicUrl = (st?.tunnel?.url || tunnelUrl)
+    .replace(/^wss:\/\//i, 'https://')
+    .replace(/\/tunnel\/connect.*$/i, '/');
   const siriToken = st?.siri.token || '<token>';
   const baseHost = hostLabel || 'esp32s3.local';
   const uidDisplay = st?.mqtt.client_id ? st.mqtt.client_id : '<私钥>';
@@ -501,6 +562,56 @@ export function Wol({ hostLabel }: Props) {
                 <button class="btn btn-primary" disabled={busy} onClick={saveMqtt}>保存 MQTT 配置</button>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Cloudflare Workers 24/7 Cloud Tunnel */}
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Cloudflare Workers 外网控制台隧道（电脑关机 24 小时全天候访问）</span>
+          <div class="btn-row" style={{ alignItems: 'center' }}>
+            <span class={`tag ${tunnelConn ? 'red' : ''}`}>
+              {tunnelConn ? '已连接' : tunnelEn ? '连接中' : '未启用'}
+            </span>
+            <button type="button" class={`toggle ${tunnelEn ? 'on' : ''}`} onClick={toggleTunnelEnabled} />
+          </div>
+        </div>
+        <div class="grid g-2" style={{ gap: '12px' }}>
+          <div class="field" style={{ marginBottom: 0 }}>
+            <label>Worker 隧道地址 (WSS)</label>
+            <input
+              class="input num"
+              value={tunnelUrl}
+              placeholder="wss://s3-console.xxx.workers.dev/tunnel/connect"
+              onInput={(e) => { setTunnelUrl((e.target as HTMLInputElement).value); setTunnelDirty(true); }}
+            />
+          </div>
+          <div class="field" style={{ marginBottom: 0 }}>
+            <label>隧道密钥 (TUNNEL_SECRET)</label>
+            <input
+              class="input num"
+              type="password"
+              value={tunnelSecret}
+              placeholder={st?.tunnel?.has_secret ? '已保存密钥（留空保持不变）' : '粘贴部署 Worker 时设置的密钥'}
+              onInput={(e) => { setTunnelSecret((e.target as HTMLInputElement).value); setTunnelDirty(true); }}
+            />
+          </div>
+        </div>
+        <div class="btn-row" style={{ justifyContent: 'space-between', alignItems: 'center', marginTop: '12px', paddingTop: '12px', borderTop: '1px dashed var(--line)' }}>
+          <span class="kpi-sub num">
+            {st?.tunnel?.last_error
+              ? st.tunnel.last_error
+              : tunnelPublicUrl
+                ? `外网访问入口：${tunnelPublicUrl}`
+                : '配置后 ESP32-S3 主动建立 WSS 长连接，不依赖电脑与阿里云'}
+          </span>
+          <div class="btn-row">
+            {tunnelPublicUrl && (
+              <button class="btn" onClick={() => copyText(tunnelPublicUrl, '外网控制台网址')}>复制外网网址</button>
+            )}
+            <button class="btn" disabled={busy} onClick={reconnectTunnel}>测试重连</button>
+            <button class="btn btn-primary" disabled={busy} onClick={saveTunnel}>保存隧道配置</button>
           </div>
         </div>
       </div>

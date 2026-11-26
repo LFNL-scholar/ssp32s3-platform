@@ -212,6 +212,13 @@ export interface WolState {
     enabled: boolean;
     token: string;
   };
+  tunnel?: {
+    enabled: boolean;
+    connected: boolean;
+    url: string;
+    has_secret: boolean;
+    last_error: string;
+  };
 }
 
 export type WsMessage =
@@ -312,6 +319,9 @@ export const api = {
     lamp_topic?: string;
   }) => req<WolState & { ok: boolean }>('/api/mqtt/config', { method: 'PUT', body: JSON.stringify(body) }),
   mqttReconnect: () => req<WolState & { ok: boolean }>('/api/mqtt/reconnect', { method: 'POST' }),
+  tunnelConfig: (body: { enabled?: boolean; url?: string; secret?: string }) =>
+    req<WolState & { ok: boolean }>('/api/tunnel/config', { method: 'PUT', body: JSON.stringify(body) }),
+  tunnelReconnect: () => req<WolState & { ok: boolean }>('/api/tunnel/reconnect', { method: 'POST' }),
 };
 
 type Listener = (msg: WsMessage) => void;

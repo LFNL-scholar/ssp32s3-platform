@@ -3,3 +3,4 @@ dependencies:
   joltwallet/littlefs: "^1.14.0"
   espressif/led_strip: "^3.0.0"
   espressif/mdns: "^1.4.0"
+  espressif/esp_websocket_client: "^1.2.0"

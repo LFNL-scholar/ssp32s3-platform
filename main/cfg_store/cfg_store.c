@@ -25,6 +25,7 @@ static const char *TAG = "cfg_store";
 #define KEY_SIRI     "siri"
 #define KEY_WOL      "wol"
 #define KEY_MQTT     "mqtt"
+#define KEY_TUNNEL   "tunnel"
 
 typedef struct {
     cfg_wifi_t wifi;
@@ -35,6 +36,7 @@ typedef struct {
     cfg_siri_t siri;
     cfg_wol_t wol;
     cfg_mqtt_t mqtt;
+    cfg_tunnel_t tunnel;
 } cfg_cache_t;
 
 static cfg_cache_t s_cache;
@@ -150,6 +152,9 @@ esp_err_t cfg_store_init(void)
     }
     if (nvs_read_blob_exact(KEY_MQTT, &s_cache.mqtt, sizeof(s_cache.mqtt)) != ESP_OK) {
         mqtt_set_defaults(&s_cache.mqtt);
+    }
+    if (nvs_read_blob_exact(KEY_TUNNEL, &s_cache.tunnel, sizeof(s_cache.tunnel)) != ESP_OK) {
+        memset(&s_cache.tunnel, 0, sizeof(s_cache.tunnel));
     }
 
     xSemaphoreGive(s_mutex);
@@ -692,6 +697,27 @@ esp_err_t cfg_mqtt_set(const cfg_mqtt_t *in)
     esp_err_t err = nvs_write_blob(KEY_MQTT, &next, sizeof(next));
     if (err == ESP_OK) {
         s_cache.mqtt = next;
+    }
+    xSemaphoreGive(s_mutex);
+    return err;
+}
+
+void cfg_tunnel_get(cfg_tunnel_t *out)
+{
+    if (!out) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    *out = s_cache.tunnel;
+    xSemaphoreGive(s_mutex);
+}
+
+esp_err_t cfg_tunnel_set(const cfg_tunnel_t *in)
+{
+    if (!in) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    cfg_tunnel_t next = *in;
+    esp_err_t err = nvs_write_blob(KEY_TUNNEL, &next, sizeof(next));
+    if (err == ESP_OK) {
+        s_cache.tunnel = next;
     }
     xSemaphoreGive(s_mutex);
     return err;

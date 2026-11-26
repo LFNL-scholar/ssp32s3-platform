@@ -1,5 +1,6 @@
 #include "wol_mgr.h"
 #include "mqtt_bridge.h"
+#include "cloud_tunnel.h"
 #include "cfg_store.h"
 #include "wifi_mgr.h"
 
@@ -482,6 +483,18 @@ cJSON *wol_mgr_build_state_json(void)
     cJSON_AddBoolToObject(siri, "enabled", scfg.enabled);
     cJSON_AddStringToObject(siri, "token", scfg.token);
     cJSON_AddItemToObject(root, "siri", siri);
+
+    cfg_tunnel_t tcfg;
+    cfg_tunnel_get(&tcfg);
+    cloud_tunnel_status_t tst;
+    cloud_tunnel_get_status(&tst);
+    cJSON *tunnel = cJSON_CreateObject();
+    cJSON_AddBoolToObject(tunnel, "enabled", tcfg.enabled);
+    cJSON_AddBoolToObject(tunnel, "connected", tst.connected);
+    cJSON_AddStringToObject(tunnel, "url", tcfg.url);
+    cJSON_AddBoolToObject(tunnel, "has_secret", tcfg.secret[0] != '\0');
+    cJSON_AddStringToObject(tunnel, "last_error", tst.last_error);
+    cJSON_AddItemToObject(root, "tunnel", tunnel);
 
     return root;
 }

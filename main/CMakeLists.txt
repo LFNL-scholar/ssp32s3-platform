@@ -19,6 +19,7 @@ idf_component_register(
         "lamp_ctrl/lamp_controller.c"
         "wol_mgr/wol_mgr.c"
         "mqtt_bridge/mqtt_bridge.c"
+        "cloud_tunnel/cloud_tunnel.c"
     INCLUDE_DIRS
         "."
         "cfg_store"
@@ -33,6 +34,7 @@ idf_component_register(
         "lamp_ctrl"
         "wol_mgr"
         "mqtt_bridge"
+        "cloud_tunnel"
     REQUIRES
         nvs_flash
         esp_wifi

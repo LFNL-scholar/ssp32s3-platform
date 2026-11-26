@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "s3-console",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-26",
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "s3.lfnltech.xyz",
+      "custom_domain": true
+    }
+  ],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/ws", "/tunnel/*"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "TUNNEL",
+        "class_name": "DeviceTunnel"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["DeviceTunnel"]
+    }
+  ]
+}

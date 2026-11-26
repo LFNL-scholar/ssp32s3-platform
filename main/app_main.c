@@ -18,6 +18,7 @@
 #include "lamp_controller.h"
 #include "wol_mgr.h"
 #include "mqtt_bridge.h"
+#include "cloud_tunnel.h"
 
 static const char *TAG = "app_main";
 
@@ -91,6 +92,7 @@ void app_main(void)
     wol_mgr_set_ws_cb(web_server_ws_broadcast);
     ESP_ERROR_CHECK(wol_mgr_init());
     mqtt_bridge_init();
+    cloud_tunnel_init();
 
     ble_presence_set_ws_cb(web_server_ws_broadcast);
     ble_presence_set_home_count_cb(on_presence_home_count_change);

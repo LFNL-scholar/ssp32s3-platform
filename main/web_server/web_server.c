@@ -26,6 +26,7 @@
 #include "lamp_history.h"
 #include "wol_mgr.h"
 #include "mqtt_bridge.h"
+#include "cloud_tunnel.h"
 
 static const char *TAG = "web_server";
 
@@ -120,7 +121,9 @@ static void ws_bcast_work_cb(void *arg)
 
 void web_server_ws_broadcast(const char *json_str)
 {
-    if (!s_httpd || !json_str || ws_client_count() == 0) return;
+    if (!json_str) return;
+    cloud_tunnel_forward_ws_bcast(json_str);
+    if (!s_httpd || ws_client_count() == 0) return;
 
     ws_bcast_work_t *w = malloc(sizeof(ws_bcast_work_t));
     if (!w) return;
@@ -1315,6 +1318,45 @@ static esp_err_t handle_mqtt_reconnect(httpd_req_t *req)
     return send_json(req, "200 OK", o);
 }
 
+static esp_err_t handle_tunnel_config(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *body = read_json_body(req, 512);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    cfg_tunnel_t cfg;
+    cfg_tunnel_get(&cfg);
+
+    const cJSON *v;
+    if (cJSON_IsBool((v = cJSON_GetObjectItem(body, "enabled")))) {
+        cfg.enabled = cJSON_IsTrue(v);
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "url")))) {
+        strlcpy(cfg.url, v->valuestring, sizeof(cfg.url));
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "secret")))) {
+        strlcpy(cfg.secret, v->valuestring, sizeof(cfg.secret));
+    }
+    cJSON_Delete(body);
+
+    esp_err_t err = cfg_tunnel_set(&cfg);
+    if (err != ESP_OK) return send_err(req, "500 Internal Server Error", "保存云端隧道配置失败");
+
+    cloud_tunnel_reload();
+    cJSON *o = wol_mgr_build_state_json();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_tunnel_reconnect(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cloud_tunnel_reload();
+    cJSON *o = wol_mgr_build_state_json();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
 static esp_err_t handle_siri_wol_wake(httpd_req_t *req)
 {
     char qbuf[192] = {0};
@@ -1554,7 +1596,7 @@ static void ws_broadcast_task(void *arg)
 {
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
-        if (ws_client_count() == 0) continue;
+        if (ws_client_count() == 0 && !cloud_tunnel_is_connected()) continue;
 
         cJSON *tel = sys_monitor_build_telemetry_json();
         if (tel) {
@@ -1654,6 +1696,8 @@ esp_err_t web_server_start(void)
         { .uri = "/api/wol/probe",             .method = HTTP_POST,   .handler = handle_wol_probe },
         { .uri = "/api/mqtt/config",           .method = HTTP_PUT,    .handler = handle_mqtt_config },
         { .uri = "/api/mqtt/reconnect",        .method = HTTP_POST,   .handler = handle_mqtt_reconnect },
+        { .uri = "/api/tunnel/config",         .method = HTTP_PUT,    .handler = handle_tunnel_config },
+        { .uri = "/api/tunnel/reconnect",      .method = HTTP_POST,   .handler = handle_tunnel_reconnect },
         { .uri = "/api/siri/wol/wake",         .method = HTTP_GET,    .handler = handle_siri_wol_wake },
         { .uri = "/api/siri/wol/wake",         .method = HTTP_POST,   .handler = handle_siri_wol_wake },
         { .uri = "/api/siri/wol/status",       .method = HTTP_GET,    .handler = handle_siri_wol_status },
