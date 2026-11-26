@@ -34,6 +34,7 @@ export function Hardware({ themeTick }: { themeTick: string }) {
 
   const [otaPct, setOtaPct] = useState<number | null>(null);
   const [otaTarget, setOtaTarget] = useState('');
+  const [hoverPart, setHoverPart] = useState<string | null>(null);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
 
@@ -236,21 +237,190 @@ export function Hardware({ themeTick }: { themeTick: string }) {
         </div>
 
         <div class="card">
-          <div class="card-head"><span class="card-title">16MB Flash 分区拓扑与 LittleFS</span><span class="tag">QIO 16MB</span></div>
-          <div class="part-bar">
-            <div class="part-seg" style={{ width: '25%', background: P.ink }} title="ota_0" />
-            <div class="part-seg" style={{ width: '25%', background: P.sec }} title="ota_1" />
-            <div class="part-seg" style={{ width: '12.5%', background: P.red }} title="www" />
-            <div class="part-seg" style={{ width: '37.5%', background: P.lbl }} title="data" />
-          </div>
-          <table class="kv-table">
-            <tbody>
-              <tr><td class="kv-key">ota_0 / ota_1</td><td class="num">2 × 4.00 MB（双区热备）</td></tr>
-              <tr><td class="kv-key">www（Web 界面）</td><td class="num">{info?.littlefs.www ? `${fmtBytes(info.littlefs.www.used)} / ${fmtBytes(info.littlefs.www.total)}` : '--'}</td></tr>
-              <tr><td class="kv-key">data（日志与射频）</td><td class="num">{info?.littlefs.data ? `${fmtBytes(info.littlefs.data.used)} / ${fmtBytes(info.littlefs.data.total)}` : '--'}</td></tr>
-              <tr><td class="kv-key">FreeRTOS 活跃任务</td><td class="num">{tel?.tasks.length ?? 0} 个任务运行中</td></tr>
-            </tbody>
-          </table>
+          {(() => {
+            const FLASH_TOTAL = 16 * 1024 * 1024;
+            const partByLabel = new Map((info?.partitions || []).map((p) => [p.label, p]));
+            const ota0P = partByLabel.get('ota_0');
+            const ota1P = partByLabel.get('ota_1');
+            const wwwP = partByLabel.get('www');
+            const dataP = partByLabel.get('data');
+
+            const flashEntries = [
+              {
+                key: 'ota_0',
+                label: 'ota_0',
+                shortLbl: 'ota_0 · 4M',
+                badge: info?.running_partition === 'ota_0' ? '运行中' : '热备',
+                role: '主应用槽位',
+                total: ota0P?.size ?? 4 * 1024 * 1024,
+                used: typeof ota0P?.used === 'number' ? ota0P.used : null,
+                offset: ota0P?.offset ?? 0x20000,
+                color: info?.running_partition === 'ota_0' ? P.red : P.ink,
+              },
+              {
+                key: 'ota_1',
+                label: 'ota_1',
+                shortLbl: 'ota_1 · 4M',
+                badge: info?.running_partition === 'ota_1' ? '运行中' : '热备',
+                role: 'OTA 热备槽位',
+                total: ota1P?.size ?? 4 * 1024 * 1024,
+                used: typeof ota1P?.used === 'number' ? ota1P.used : null,
+                offset: ota1P?.offset ?? 0x420000,
+                color: info?.running_partition === 'ota_1' ? P.red : P.ink,
+              },
+              {
+                key: 'www',
+                label: 'www',
+                shortLbl: 'www · 2M',
+                badge: 'Web',
+                role: '前端 LittleFS',
+                total: info?.littlefs.www?.total ?? wwwP?.size ?? 2 * 1024 * 1024,
+                used: info?.littlefs.www ? info.littlefs.www.used : null,
+                offset: wwwP?.offset ?? 0x820000,
+                color: P.sec,
+              },
+              {
+                key: 'data',
+                label: 'data',
+                shortLbl: 'data · 5.8M',
+                badge: '数据',
+                role: '日志 / 射频 / 账单',
+                total: info?.littlefs.data?.total ?? dataP?.size ?? 0x5d0000,
+                used: info?.littlefs.data ? info.littlefs.data.used : null,
+                offset: dataP?.offset ?? 0xa20000,
+                color: P.lbl,
+              },
+            ].map((e) => {
+              const free = e.used !== null ? Math.max(0, e.total - e.used) : null;
+              const usedPct = e.used !== null && e.total > 0 ? Math.min(100, (e.used / e.total) * 100) : 0;
+              const sharePct = (e.total / FLASH_TOTAL) * 100;
+              return { ...e, free, usedPct, sharePct };
+            });
+
+            const mainSum = flashEntries.reduce((acc, e) => acc + e.total, 0);
+            const sysTotal = Math.max(0, FLASH_TOTAL - mainSum);
+            const sysSharePct = (sysTotal / FLASH_TOTAL) * 100;
+            const totalKnownFree = flashEntries.reduce((acc, e) => acc + (e.free ?? 0), 0);
+            const hasKnownFree = flashEntries.some((e) => e.free !== null);
+
+            return (
+              <>
+                <div class="card-head">
+                  <span class="card-title">16MB Flash 分区拓扑与用量明细</span>
+                  <div class="btn-row" style={{ gap: '6px' }}>
+                    {hasKnownFree && <span class="tag dark num">可测剩余 {fmtBytes(totalKnownFree)}</span>}
+                    <span class="tag">QIO 16MB</span>
+                  </div>
+                </div>
+
+                {/* Proportional 16MB Flash Bar with inner usage ratio */}
+                <div class="flash-map" onMouseLeave={() => setHoverPart(null)}>
+                  <div
+                    class={`flash-seg ${hoverPart === 'sys' ? 'active-hover' : hoverPart ? 'dimmed' : ''}`}
+                    style={{ width: `${Math.max(1.8, sysSharePct).toFixed(2)}%`, flexShrink: 0 }}
+                    title={`系统保留区 (Bootloader / NVS / OTA Data / Coredump)\n总容量：${fmtBytes(sysTotal)} (${sysSharePct.toFixed(1)}%)`}
+                    onMouseEnter={() => setHoverPart('sys')}
+                  >
+                    <div class="flash-seg-fill" style={{ width: '100%', background: P.tick }} />
+                  </div>
+                  {flashEntries.map((e) => {
+                    const isHov = hoverPart === e.key;
+                    const dimmed = hoverPart !== null && !isHov;
+                    const freeStr = e.free !== null ? fmtBytes(e.free) : '待读取';
+                    const usedStr = e.used !== null ? fmtBytes(e.used) : '--';
+                    const tip = `${e.label} (${e.role}) @ 0x${e.offset.toString(16)}\n总空间：${fmtBytes(e.total)} (${e.sharePct.toFixed(1)}%)\n已占用：${usedStr} (${e.usedPct.toFixed(1)}%)\n剩余空间：${freeStr}`;
+                    return (
+                      <div
+                        key={e.key}
+                        class={`flash-seg ${isHov ? 'active-hover' : dimmed ? 'dimmed' : ''}`}
+                        style={{ width: `${e.sharePct.toFixed(2)}%` }}
+                        title={tip}
+                        onMouseEnter={() => setHoverPart(e.key)}
+                      >
+                        {e.used !== null && (
+                          <>
+                            <div class="flash-seg-fill" style={{ width: `${e.usedPct.toFixed(1)}%`, background: e.color }} />
+                            <div
+                              class="flash-seg-used-line"
+                              style={{ width: `${e.used > 0 ? Math.max(3, e.usedPct) : 0}%`, background: e.color }}
+                            />
+                          </>
+                        )}
+                        <span class="flash-seg-lbl num">{e.shortLbl}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Per-partition breakdown: share + used + remaining */}
+                <div class="flash-rows" onMouseLeave={() => setHoverPart(null)}>
+                  {flashEntries.map((e) => {
+                    const isHov = hoverPart === e.key;
+                    const isActiveOta = info?.running_partition === e.key;
+                    const isEmptyOta = (e.key === 'ota_0' || e.key === 'ota_1') && e.used === 0;
+                    return (
+                      <div
+                        key={e.key}
+                        class={`flash-row ${isHov ? 'active-hover' : ''}`}
+                        onMouseEnter={() => setHoverPart(e.key)}
+                      >
+                        <div>
+                          <div class="flash-row-name">
+                            <span class="flash-swatch" style={{ background: e.color }} />
+                            <strong class="num" style={{ fontSize: '12.5px' }}>{e.label}</strong>
+                            <span
+                              class={`tag ${isActiveOta ? 'red' : ''}`}
+                              style={{ padding: '0 5px', fontSize: '10px', lineHeight: '16px' }}
+                            >
+                              {e.badge}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '11px', color: 'var(--text-dim)', paddingLeft: '15px', marginTop: '1px' }}>
+                            {e.role} · 占全片 <span class="num">{e.sharePct.toFixed(1)}%</span>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div class="flash-mini-bar">
+                            <div
+                              style={{
+                                width: `${e.used !== null && e.used > 0 ? Math.max(2, e.usedPct) : 0}%`,
+                                height: '100%',
+                                background: e.color,
+                              }}
+                            />
+                          </div>
+                          <div class="num" style={{ fontSize: '10.5px', color: 'var(--text-sec)', marginTop: '4px' }}>
+                            {isEmptyOta
+                              ? '空槽 · 待首次 OTA'
+                              : e.used !== null
+                                ? `已用 ${e.usedPct.toFixed(1)}%`
+                                : '等待固件上报'}
+                          </div>
+                        </div>
+
+                        <div class="num" style={{ textAlign: 'right' }}>
+                          <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)' }}>
+                            {e.used !== null ? `${fmtBytes(e.used)} / ${fmtBytes(e.total)}` : `容量 ${fmtBytes(e.total)}`}
+                          </div>
+                          <div style={{ fontSize: '11px', color: isActiveOta ? 'var(--red)' : 'var(--text-sec)', fontWeight: 600 }}>
+                            {e.free !== null ? `剩余 ${fmtBytes(e.free)}` : '升级固件后可见已用'}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div class="flash-foot">
+                  <span class="num">
+                    系统保留 (Boot/NVS/Dump)：{fmtBytes(sysTotal)} ({sysSharePct.toFixed(1)}%)
+                  </span>
+                  <span class="num">FreeRTOS 活跃任务：{tel?.tasks.length ?? 0} 个</span>
+                </div>
+              </>
+            );
+          })()}
         </div>
       </div>
 

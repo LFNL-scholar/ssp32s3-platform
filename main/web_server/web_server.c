@@ -31,9 +31,13 @@
 static const char *TAG = "web_server";
 
 #define MAX_WS_CLIENTS 8
+#define LIVING_COST_PATH      "/data/living_cost.json"
+#define LIVING_COST_TMP_PATH  "/data/living_cost.tmp"
+#define LIVING_COST_MAX_BYTES 16384
 
 static httpd_handle_t s_httpd = NULL;
 static SemaphoreHandle_t s_ws_mutex = NULL;
+static SemaphoreHandle_t s_cost_mutex = NULL;
 static int s_ws_fds[MAX_WS_CLIENTS];
 
 typedef struct {
@@ -1404,6 +1408,102 @@ static esp_err_t handle_siri_wol_status(httpd_req_t *req)
     return send_json(req, "200 OK", o);
 }
 
+// ---------- Living Cost (/data/living_cost.json) Handlers ----------
+
+static esp_err_t handle_living_cost_get(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+
+    xSemaphoreTake(s_cost_mutex, portMAX_DELAY);
+    struct stat st;
+    if (stat(LIVING_COST_PATH, &st) != 0 || st.st_size <= 0 || st.st_size > LIVING_COST_MAX_BYTES) {
+        xSemaphoreGive(s_cost_mutex);
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddBoolToObject(o, "initialized", false);
+        return send_json(req, "200 OK", o);
+    }
+
+    char *buf = malloc((size_t)st.st_size + 1);
+    if (!buf) {
+        xSemaphoreGive(s_cost_mutex);
+        return send_err(req, "500 Internal Server Error", "内存不足");
+    }
+
+    FILE *f = fopen(LIVING_COST_PATH, "rb");
+    size_t n = 0;
+    if (f) {
+        n = fread(buf, 1, (size_t)st.st_size, f);
+        fclose(f);
+    }
+    xSemaphoreGive(s_cost_mutex);
+
+    if (!f || n == 0) {
+        free(buf);
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddBoolToObject(o, "initialized", false);
+        return send_json(req, "200 OK", o);
+    }
+
+    buf[n] = '\0';
+    httpd_resp_set_status(req, "200 OK");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_send(req, buf, (ssize_t)n);
+    free(buf);
+    return ESP_OK;
+}
+
+static esp_err_t handle_living_cost_put(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+
+    cJSON *body = read_json_body(req, LIVING_COST_MAX_BYTES);
+    if (!body || !cJSON_IsObject(body) || !cJSON_IsArray(cJSON_GetObjectItem(body, "records"))) {
+        if (body) cJSON_Delete(body);
+        return send_err(req, "400 Bad Request", "账单数据格式无效");
+    }
+
+    char *str = cJSON_PrintUnformatted(body);
+    cJSON_Delete(body);
+    if (!str) {
+        return send_err(req, "500 Internal Server Error", "序列化账单失败");
+    }
+
+    size_t len = strlen(str);
+    if (len > LIVING_COST_MAX_BYTES) {
+        cJSON_free(str);
+        return send_err(req, "400 Bad Request", "账单数据超出大小限制");
+    }
+
+    xSemaphoreTake(s_cost_mutex, portMAX_DELAY);
+    bool ok = false;
+    FILE *f = fopen(LIVING_COST_TMP_PATH, "wb");
+    if (f) {
+        ok = (fwrite(str, 1, len, f) == len) && (fflush(f) == 0) && (fsync(fileno(f)) == 0);
+        if (fclose(f) != 0) ok = false;
+        if (ok) {
+            remove(LIVING_COST_PATH);
+            if (rename(LIVING_COST_TMP_PATH, LIVING_COST_PATH) != 0) {
+                ok = false;
+            }
+        }
+        if (!ok) {
+            remove(LIVING_COST_TMP_PATH);
+        }
+    }
+    xSemaphoreGive(s_cost_mutex);
+    cJSON_free(str);
+
+    if (!ok) {
+        return send_err(req, "500 Internal Server Error", "写入 Flash 账单文件失败");
+    }
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddNumberToObject(o, "bytes", (double)len);
+    return send_json(req, "200 OK", o);
+}
+
 // ---------- WebSocket Handler ----------
 
 #ifdef CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
@@ -1629,7 +1729,8 @@ esp_err_t web_server_start(void)
 {
     auth_mgr_init();
     s_ws_mutex = xSemaphoreCreateMutex();
-    if (!s_ws_mutex) return ESP_ERR_NO_MEM;
+    s_cost_mutex = xSemaphoreCreateMutex();
+    if (!s_ws_mutex || !s_cost_mutex) return ESP_ERR_NO_MEM;
     for (int i = 0; i < MAX_WS_CLIENTS; i++) s_ws_fds[i] = -1;
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
@@ -1701,6 +1802,8 @@ esp_err_t web_server_start(void)
         { .uri = "/api/siri/wol/wake",         .method = HTTP_GET,    .handler = handle_siri_wol_wake },
         { .uri = "/api/siri/wol/wake",         .method = HTTP_POST,   .handler = handle_siri_wol_wake },
         { .uri = "/api/siri/wol/status",       .method = HTTP_GET,    .handler = handle_siri_wol_status },
+        { .uri = "/api/living-cost",           .method = HTTP_GET,    .handler = handle_living_cost_get },
+        { .uri = "/api/living-cost",           .method = HTTP_PUT,    .handler = handle_living_cost_put },
     };
 
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {

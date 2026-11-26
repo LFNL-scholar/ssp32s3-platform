@@ -7,11 +7,12 @@ import { Lamp } from './pages/Lamp';
 import { Wol } from './pages/Wol';
 import { Presence } from './pages/Presence';
 import { Topology } from './pages/Topology';
+import { LivingCost } from './pages/LivingCost';
 import { Blueprint } from './pages/Blueprint';
 import { Hardware } from './pages/Hardware';
 import { applyThemeMode, getSavedThemeMode, resolveTheme, ThemeMode } from './utils/theme';
 
-type Tab = 'overview' | 'lighting' | 'wol' | 'presence' | 'topology' | 'blueprint' | 'hardware';
+type Tab = 'overview' | 'lighting' | 'wol' | 'presence' | 'topology' | 'cost' | 'blueprint' | 'hardware';
 
 export function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
@@ -107,6 +108,10 @@ export function App() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" /><line x1="9" y1="3" x2="9" y2="18" /><line x1="15" y1="6" x2="15" y2="21" /></svg>
             <span>空间拓扑</span>
           </button>
+          <button class={`nav-item ${tab === 'cost' ? 'active' : ''}`} onClick={() => switchTab('cost')}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="5" width="18" height="14" rx="2" /><line x1="3" y1="10" x2="21" y2="10" /><circle cx="16.5" cy="14.5" r="1.2" /></svg>
+            <span>生活成本</span>
+          </button>
           <button class={`nav-item ${tab === 'blueprint' ? 'active' : ''}`} onClick={() => switchTab('blueprint')}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="1" /><path d="M9 3v18M15 3v18M3 9h18M3 15h18" /></svg>
             <span>硬件蓝图</span>
@@ -155,6 +160,7 @@ export function App() {
         {tab === 'wol' && <Wol hostLabel={hostLabel} />}
         {tab === 'presence' && <Presence themeTick={themeTick} />}
         {tab === 'topology' && <Topology />}
+        {tab === 'cost' && <LivingCost themeTick={themeTick} />}
         {tab === 'blueprint' && <Blueprint />}
         {tab === 'hardware' && <Hardware themeTick={themeTick} />}
       </main>

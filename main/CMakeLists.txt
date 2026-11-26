@@ -49,6 +49,7 @@ idf_component_register(
         esp_driver_spi
         esp_driver_rmt
         app_update
+        bootloader_support
         mbedtls
         bt
         json

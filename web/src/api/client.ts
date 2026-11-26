@@ -18,6 +18,7 @@ export interface PartitionInfo {
   subtype: number;
   offset: number;
   size: number;
+  used?: number;
 }
 
 export interface SystemInfo {
@@ -221,6 +222,32 @@ export interface WolState {
   };
 }
 
+export type LivingCostHouse = '旧房' | '新房';
+export type LivingCostUtilMode = 'split' | 'bundle';
+export type LivingCostPart = 'elec' | 'water' | 'gas';
+
+export interface LivingCostRecord {
+  month: string;
+  house: LivingCostHouse;
+  rent: number;
+  utilMode: LivingCostUtilMode;
+  elec: number;
+  water: number;
+  gas: number;
+  bundleAmount: number;
+  bundleParts: LivingCostPart[];
+  utilPending?: boolean;
+  lampHours?: number;
+  note?: string;
+}
+
+export interface LivingCostData {
+  initialized?: boolean;
+  budgetTotal: number;
+  budgetUtil: number;
+  records: LivingCostRecord[];
+}
+
 export type WsMessage =
   | TelemetryMsg
   | { type: 'presence_tick'; persons: PersonState[] }
@@ -322,6 +349,10 @@ export const api = {
   tunnelConfig: (body: { enabled?: boolean; url?: string; secret?: string }) =>
     req<WolState & { ok: boolean }>('/api/tunnel/config', { method: 'PUT', body: JSON.stringify(body) }),
   tunnelReconnect: () => req<WolState & { ok: boolean }>('/api/tunnel/reconnect', { method: 'POST' }),
+
+  livingCostGet: () => req<LivingCostData>('/api/living-cost'),
+  livingCostSave: (data: LivingCostData) =>
+    req<{ ok: boolean; bytes?: number }>('/api/living-cost', { method: 'PUT', body: JSON.stringify(data) }),
 };
 
 type Listener = (msg: WsMessage) => void;

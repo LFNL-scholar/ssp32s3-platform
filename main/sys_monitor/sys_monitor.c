@@ -13,6 +13,7 @@
 #include "esp_app_desc.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
+#include "esp_image_format.h"
 #include "esp_littlefs.h"
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
@@ -114,6 +115,15 @@ cJSON *sys_monitor_build_info_json(void)
         cJSON_AddNumberToObject(po, "subtype", p->subtype);
         cJSON_AddNumberToObject(po, "offset", p->address);
         cJSON_AddNumberToObject(po, "size", p->size);
+        if (p->type == ESP_PARTITION_TYPE_APP) {
+            esp_partition_pos_t pos = { .offset = p->address, .size = p->size };
+            esp_image_metadata_t meta;
+            if (esp_image_get_metadata(&pos, &meta) == ESP_OK && meta.image_len > 0 && meta.image_len <= p->size) {
+                cJSON_AddNumberToObject(po, "used", meta.image_len);
+            } else {
+                cJSON_AddNumberToObject(po, "used", 0);
+            }
+        }
         cJSON_AddItemToArray(parts, po);
         it = esp_partition_next(it);
     }

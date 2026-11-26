@@ -502,6 +502,49 @@ html {
 .part-bar { display: flex; height: 8px; overflow: hidden; gap: 2px; margin: 8px 0 14px; background: var(--line); }
 .part-seg { height: 100%; }
 
+.flash-map {
+  display: flex; gap: 3px; padding: 3px;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  background: var(--surface-sub); margin-bottom: 10px;
+}
+.flash-seg {
+  position: relative; height: 30px; border-radius: 2px;
+  border: 1px solid var(--line); background: var(--surface);
+  overflow: hidden; display: flex; align-items: center; justify-content: center;
+  transition: border-color 0.14s, opacity 0.14s; cursor: pointer; min-width: 0;
+}
+.flash-seg.active-hover { border-color: var(--black); }
+.flash-seg.dimmed { opacity: 0.45; }
+.flash-seg-fill {
+  position: absolute; left: 0; top: 0; bottom: 0; opacity: 0.14; pointer-events: none;
+}
+.flash-seg-used-line {
+  position: absolute; left: 0; bottom: 0; height: 3px; pointer-events: none;
+}
+.flash-seg-lbl {
+  position: relative; z-index: 1; font-size: 10.5px; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 4px;
+}
+.flash-rows { display: flex; flex-direction: column; gap: 6px; }
+.flash-row {
+  display: grid; grid-template-columns: minmax(120px, 1.2fr) minmax(88px, 0.85fr) minmax(135px, 1.15fr);
+  align-items: center; gap: 10px; padding: 7px 9px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sub);
+  transition: border-color 0.14s, background 0.14s; cursor: pointer;
+}
+.flash-row.active-hover { border-color: var(--black); background: var(--surface); }
+.flash-row-name { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.flash-swatch { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+.flash-mini-bar { height: 4px; background: var(--line); border-radius: 1px; overflow: hidden; }
+.flash-foot {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+  margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line);
+  font-size: 11.5px; color: var(--text-sec);
+}
+@media (max-width: 640px) {
+  .flash-row { grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+}
+
 .field { margin-bottom: 12px; }
 .field label { display: block; font-size: 12px; font-weight: 500; color: var(--text-sec); margin-bottom: 5px; }
 .input {
@@ -538,3 +581,37 @@ html {
 .modal-card { width: 100%; max-width: 440px; padding: 26px 24px; }
 .auth-wrap { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
 .auth-card { width: 100%; max-width: 390px; padding: 32px 28px; }
+
+/* ==================== LIVING COST ==================== */
+.g-cost-top { grid-template-columns: minmax(0, 1.38fr) minmax(350px, 1fr); }
+.g-cost-bot { grid-template-columns: minmax(0, 1.25fr) minmax(360px, 1fr); }
+@media (max-width: 1180px) {
+  .g-cost-top, .g-cost-bot { grid-template-columns: 1fr; }
+}
+.cost-pipe-group { cursor: pointer; transition: opacity 0.18s; }
+.cost-pipe-group:hover { opacity: 0.92; }
+.cost-pipe-group.dimmed { opacity: 0.25; }
+.cost-row-btn { cursor: pointer; transition: background 0.12s; }
+.cost-row-btn:hover { background: var(--surface-sub); }
+.cost-row-btn.active { background: var(--surface-sub); box-shadow: inset 3px 0 0 var(--red); }
+.cost-ledger-wrap { flex: 1; min-height: 0; overflow-y: auto; }
+.cost-ledger-wrap thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.cost-seg {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px;
+  background: var(--surface-sub); border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.cost-seg-btn {
+  appearance: none; border: none; background: transparent; color: var(--text-sec);
+  font-family: var(--font); font-size: 12px; font-weight: 500; padding: 6px 8px;
+  border-radius: 3px; cursor: pointer; transition: all 0.14s;
+}
+.cost-seg-btn:hover { color: var(--text); }
+.cost-seg-btn.active { background: var(--inv-bg); color: var(--inv-text); font-weight: 600; }
+.cost-chip-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.cost-chip {
+  appearance: none; border: 1px solid var(--line-strong); background: var(--surface-sub);
+  color: var(--text-sec); font-family: var(--font); font-size: 11.5px; font-weight: 500;
+  padding: 4px 10px; border-radius: var(--radius-sm); cursor: pointer; transition: all 0.14s;
+}
+.cost-chip:hover { border-color: var(--black); color: var(--text); }
+.cost-chip.on { background: var(--inv-bg); border-color: var(--inv-bg); color: var(--inv-text); font-weight: 600; }
