@@ -248,6 +248,64 @@ export interface LivingCostData {
   records: LivingCostRecord[];
 }
 
+export interface EnvState {
+  enabled: boolean;
+  name: string;
+  mac: string;
+  has_bindkey: boolean;
+  model: string;
+  product_id: string;
+  valid: boolean;
+  temp_c: number | null;
+  humidity: number | null;
+  battery_pct: number | null;
+  rssi: number | null;
+  seen_ago_s: number;
+  adv_count: number;
+  decrypt_ok: number;
+  decrypt_fail: number;
+  last_error: string;
+  thresholds: {
+    temp_low: number;
+    temp_high: number;
+    hum_low: number;
+    hum_high: number;
+  };
+  comfort: {
+    temp_status: 'low' | 'ok' | 'high' | 'unknown';
+    hum_status: 'low' | 'ok' | 'high' | 'unknown';
+    alert: boolean;
+    label: string;
+  };
+  history: {
+    storage_ready: boolean;
+    time_synced: boolean;
+    count: number;
+    max_records: number;
+    last_saved_epoch: number;
+  };
+  siri?: {
+    enabled: boolean;
+    token: string;
+  };
+}
+
+export interface EnvHistoryResp {
+  range: '24h' | '7d' | '30d';
+  time_synced: boolean;
+  now: number;
+  count: number;
+  stats: {
+    temp_min: number | null;
+    temp_max: number | null;
+    temp_avg: number | null;
+    hum_min: number | null;
+    hum_max: number | null;
+    hum_avg: number | null;
+  };
+  points: [number, number, number][];
+}
+
 export type WsMessage =
   | TelemetryMsg
   | { type: 'presence_tick'; persons: PersonState[] }
@@ -255,7 +313,8 @@ export type WsMessage =
   | { type: 'pair_result'; status: 'success' | 'timeout' | 'cancelled' | 'error'; device_id?: number; label?: string; reason?: string }
   | ({ type: 'lamp_state' } & LampState)
   | { type: 'lamp_learn'; status: 'listening' | 'captured' | 'timeout' | 'error'; pulses?: number; duration_ms?: number; error?: string }
-  | ({ type: 'wol_state' } & WolState);
+  | ({ type: 'wol_state' } & WolState)
+  | ({ type: 'env_state' } & EnvState);
 
 let onUnauthorized: (() => void) | null = null;
 export function setUnauthorizedHandler(fn: () => void) {
@@ -353,6 +412,21 @@ export const api = {
   livingCostGet: () => req<LivingCostData>('/api/living-cost'),
   livingCostSave: (data: LivingCostData) =>
     req<{ ok: boolean; bytes?: number }>('/api/living-cost', { method: 'PUT', body: JSON.stringify(data) }),
+
+  envState: () => req<EnvState>('/api/env/state'),
+  envConfig: (body: {
+    enabled?: boolean;
+    name?: string;
+    mac?: string;
+    bindkey?: string;
+    clear_bindkey?: boolean;
+    temp_low?: number;
+    temp_high?: number;
+    hum_low?: number;
+    hum_high?: number;
+  }) => req<EnvState & { ok: boolean }>('/api/env/config', { method: 'PUT', body: JSON.stringify(body) }),
+  envHistory: (range: '24h' | '7d' | '30d') => req<EnvHistoryResp>(`/api/env/history?range=${range}`),
+  envClearHistory: () => req<{ ok: boolean }>('/api/env/history', { method: 'DELETE' }),
 };
 
 type Listener = (msg: WsMessage) => void;

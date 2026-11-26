@@ -67,6 +67,7 @@ typedef struct {
 static SemaphoreHandle_t s_mutex = NULL;
 static ble_ws_event_cb_t s_ws_cb = NULL;
 static ble_home_count_cb_t s_home_cb = NULL;
+static ble_adv_cb_t s_adv_cb = NULL;
 
 static uint8_t s_own_addr_type = BLE_OWN_ADDR_PUBLIC;
 static bool s_host_synced = false;
@@ -293,6 +294,7 @@ static uint8_t match_tracked_device_locked(const ble_addr_t *addr, int64_t ts_ms
 static void parse_adv_name(const uint8_t *data, uint8_t len, char *out_name, size_t max_len)
 {
     out_name[0] = '\0';
+    bool has_mibeacon = false;
     uint8_t pos = 0;
     while (pos < len) {
         uint8_t field_len = data[pos];
@@ -304,8 +306,14 @@ static void parse_adv_name(const uint8_t *data, uint8_t len, char *out_name, siz
             memcpy(out_name, &data[pos + 2], copy_len);
             out_name[copy_len] = '\0';
             if (type == BLE_HS_ADV_TYPE_COMP_NAME) return;
+        } else if (type == 0x16 && field_len >= 3 &&
+                   data[pos + 2] == 0x95 && data[pos + 3] == 0xFE) {
+            has_mibeacon = true;
         }
         pos += 1 + field_len;
+    }
+    if (out_name[0] == '\0' && has_mibeacon) {
+        strlcpy(out_name, "MiBeacon (Xiaomi)", max_len);
     }
 }
 
@@ -429,6 +437,9 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             }
         }
         xSemaphoreGive(s_mutex);
+        if (s_adv_cb && event->disc.length_data > 0 && event->disc.data) {
+            s_adv_cb(event->disc.addr.val, event->disc.rssi, event->disc.data, event->disc.length_data);
+        }
         break;
     }
 
@@ -687,6 +698,11 @@ void ble_presence_set_ws_cb(ble_ws_event_cb_t cb)
 void ble_presence_set_home_count_cb(ble_home_count_cb_t cb)
 {
     s_home_cb = cb;
+}
+
+void ble_presence_set_adv_cb(ble_adv_cb_t cb)
+{
+    s_adv_cb = cb;
 }
 
 esp_err_t ble_presence_init(void)

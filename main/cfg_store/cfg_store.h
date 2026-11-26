@@ -93,6 +93,18 @@ typedef struct {
     char secret[64];          // shared tunnel secret
 } cfg_tunnel_t;
 
+typedef struct {
+    bool enabled;
+    char name[32];
+    uint8_t mac[6];           // LE byte order (matching NimBLE ble_addr_t.val)
+    bool has_bindkey;
+    uint8_t bindkey[16];
+    float temp_low;
+    float temp_high;
+    float hum_low;
+    float hum_high;
+} cfg_env_t;
+
 esp_err_t cfg_store_init(void);
 
 // SoftAP deterministic SSID & password
@@ -143,6 +155,10 @@ esp_err_t cfg_mqtt_set(const cfg_mqtt_t *in);
 // Cloudflare Workers outbound WSS tunnel config
 void cfg_tunnel_get(cfg_tunnel_t *out);
 esp_err_t cfg_tunnel_set(const cfg_tunnel_t *in);
+
+// Environment sensor (Xiaomi BLE MiBeacon) config
+void cfg_env_get(cfg_env_t *out);
+esp_err_t cfg_env_set(const cfg_env_t *in);
 
 // Factory reset (clears ssp_cfg + nimble_bond)
 esp_err_t cfg_store_factory_reset(void);

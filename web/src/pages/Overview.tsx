@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
-import { api, LampHistoryResp, LampState, PersonState, PresenceLogEntry, SystemSettings, TelemetryMsg, WolState, wsClient } from '../api/client';
+import { api, EnvState, LampHistoryResp, LampState, PersonState, PresenceLogEntry, SystemSettings, TelemetryMsg, WolState, wsClient } from '../api/client';
 import { BarItem, LightingBarChart } from '../components/Charts';
 import { dateKey, fmtDuration, periodRange, summarize } from '../utils/lampStats';
 
@@ -7,15 +7,17 @@ interface Props {
   onGoHardware: () => void;
   onGoLighting: () => void;
   onGoWol: () => void;
+  onGoEnv: () => void;
   themeTick: string;
 }
 
 const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
 const DAY_SHORT = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
-export function Overview({ onGoHardware, onGoLighting, onGoWol, themeTick }: Props) {
+export function Overview({ onGoHardware, onGoLighting, onGoWol, onGoEnv, themeTick }: Props) {
   const [now, setNow] = useState(() => new Date());
   const [tel, setTel] = useState<TelemetryMsg | null>(null);
+  const [env, setEnv] = useState<EnvState | null>(null);
   const [lamp, setLamp] = useState<LampState | null>(null);
   const [wol, setWol] = useState<WolState | null>(null);
   const [wolBusy, setWolBusy] = useState(false);
@@ -40,6 +42,7 @@ export function Overview({ onGoHardware, onGoLighting, onGoWol, themeTick }: Pro
     api.logs(8, 0).then((r) => setLogs(r.logs || [])).catch(() => {});
     api.getSettings().then(setCfg).catch(() => {});
     api.wolState().then(setWol).catch(() => {});
+    api.envState().then(setEnv).catch(() => {});
   };
 
   useEffect(() => {
@@ -49,6 +52,7 @@ export function Overview({ onGoHardware, onGoLighting, onGoWol, themeTick }: Pro
       if (msg.type === 'telemetry') setTel(msg);
       else if (msg.type === 'lamp_state') setLamp(msg);
       else if (msg.type === 'wol_state') setWol(msg);
+      else if (msg.type === 'env_state') setEnv(msg);
       else if (msg.type === 'presence_tick') setPersons(msg.persons);
       else if (msg.type === 'presence_event') {
         api.logs(8, 0).then((r) => setLogs(r.logs || [])).catch(() => {});
@@ -163,15 +167,24 @@ export function Overview({ onGoHardware, onGoLighting, onGoWol, themeTick }: Pro
           </div>
         </div>
 
-        <div class="health-summary" onClick={onGoHardware} title="点击进入「硬件与系统」查看详情">
-          <div class="health-metric"><small>核心温度</small><strong class="num">{tel?.temp_c !== null && tel?.temp_c !== undefined ? `${tel.temp_c.toFixed(1)} °C` : '--'}</strong></div>
-          <div class="health-sep" />
-          <div class="health-metric"><small>SRAM</small><strong class="num">{sramPct === '--' ? '--' : `${sramPct}%`}</strong></div>
-          <div class="health-sep" />
-          <div class="health-metric"><small>Wi-Fi</small><strong class="num">{tel?.wifi.sta_connected ? `${tel.wifi.rssi} dBm` : '--'}</strong></div>
-          <div class="health-sep" />
-          <div class="health-metric"><small>稳定运行</small><strong class="num">{uptimeText}</strong></div>
-          <span class="tag dark">硬件详情 →</span>
+        <div class="hero-right">
+          <div class="health-summary" onClick={onGoEnv} title="点击进入「环境监测」查看详情与 30 天趋势">
+            <div class="health-metric"><small>室内温度</small><strong class="num">{env?.temp_c !== null && env?.temp_c !== undefined ? `${env.temp_c.toFixed(1)} °C` : '--'}</strong></div>
+            <div class="health-sep" />
+            <div class="health-metric"><small>相对湿度</small><strong class="num">{env?.humidity !== null && env?.humidity !== undefined ? `${env.humidity.toFixed(0)}%` : '--'}</strong></div>
+            <span class={`tag ${env?.comfort.alert ? 'red' : env?.valid ? 'dark' : ''}`}>{env?.comfort.label || '环境'}</span>
+          </div>
+
+          <div class="health-summary" onClick={onGoHardware} title="点击进入「硬件与系统」查看详情">
+            <div class="health-metric"><small>核心温度</small><strong class="num">{tel?.temp_c !== null && tel?.temp_c !== undefined ? `${tel.temp_c.toFixed(1)} °C` : '--'}</strong></div>
+            <div class="health-sep" />
+            <div class="health-metric"><small>SRAM</small><strong class="num">{sramPct === '--' ? '--' : `${sramPct}%`}</strong></div>
+            <div class="health-sep" />
+            <div class="health-metric"><small>Wi-Fi</small><strong class="num">{tel?.wifi.sta_connected ? `${tel.wifi.rssi} dBm` : '--'}</strong></div>
+            <div class="health-sep" />
+            <div class="health-metric"><small>稳定运行</small><strong class="num">{uptimeText}</strong></div>
+            <span class="tag dark">硬件详情 →</span>
+          </div>
         </div>
       </div>
 

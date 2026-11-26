@@ -357,6 +357,7 @@ html {
 .clock-date { font-size: 12.5px; font-weight: 600; color: var(--text); line-height: 1.25; }
 .clock-tz { font-size: 11px; font-weight: 500; color: var(--text-dim); letter-spacing: 0.04em; line-height: 1.25; }
 
+.hero-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .health-summary {
   display: inline-flex; align-items: center; gap: 16px; padding: 9px 14px;
   border-radius: var(--radius-sm); background: var(--surface-sub); border: 1px solid var(--line);
@@ -615,3 +616,8 @@ html {
 }
 .cost-chip:hover { border-color: var(--black); color: var(--text); }
 .cost-chip.on { background: var(--inv-bg); border-color: var(--inv-bg); color: var(--inv-text); font-weight: 600; }
+
+.env-seg {
+  display: inline-grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 2px;
+  background: var(--surface-sub); border: 1px solid var(--line); border-radius: var(--radius-sm);
+}

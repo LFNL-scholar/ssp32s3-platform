@@ -20,6 +20,7 @@ idf_component_register(
         "wol_mgr/wol_mgr.c"
         "mqtt_bridge/mqtt_bridge.c"
         "cloud_tunnel/cloud_tunnel.c"
+        "env_sensor/env_sensor.c"
     INCLUDE_DIRS
         "."
         "cfg_store"
@@ -35,6 +36,7 @@ idf_component_register(
         "wol_mgr"
         "mqtt_bridge"
         "cloud_tunnel"
+        "env_sensor"
     REQUIRES
         nvs_flash
         esp_wifi

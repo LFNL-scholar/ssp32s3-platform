@@ -6,13 +6,14 @@ import { Overview } from './pages/Overview';
 import { Lamp } from './pages/Lamp';
 import { Wol } from './pages/Wol';
 import { Presence } from './pages/Presence';
+import { Environment } from './pages/Environment';
 import { Topology } from './pages/Topology';
 import { LivingCost } from './pages/LivingCost';
 import { Blueprint } from './pages/Blueprint';
 import { Hardware } from './pages/Hardware';
 import { applyThemeMode, getSavedThemeMode, resolveTheme, ThemeMode } from './utils/theme';
 
-type Tab = 'overview' | 'lighting' | 'wol' | 'presence' | 'topology' | 'cost' | 'blueprint' | 'hardware';
+type Tab = 'overview' | 'lighting' | 'wol' | 'presence' | 'env' | 'topology' | 'cost' | 'blueprint' | 'hardware';
 
 export function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
@@ -104,6 +105,10 @@ export function App() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="2" /><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14" /></svg>
             <span>空间感知</span>
           </button>
+          <button class={`nav-item ${tab === 'env' ? 'active' : ''}`} onClick={() => switchTab('env')}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z" /></svg>
+            <span>环境监测</span>
+          </button>
           <button class={`nav-item ${tab === 'topology' ? 'active' : ''}`} onClick={() => switchTab('topology')}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" /><line x1="9" y1="3" x2="9" y2="18" /><line x1="15" y1="6" x2="15" y2="21" /></svg>
             <span>空间拓扑</span>
@@ -155,10 +160,11 @@ export function App() {
       </aside>
 
       <main class={`workspace ${tab === 'overview' || tab === 'lighting' || tab === 'topology' || tab === 'blueprint' ? 'fit-screen' : ''}`}>
-        {tab === 'overview' && <Overview onGoHardware={() => switchTab('hardware')} onGoLighting={() => switchTab('lighting')} onGoWol={() => switchTab('wol')} themeTick={themeTick} />}
+        {tab === 'overview' && <Overview onGoHardware={() => switchTab('hardware')} onGoLighting={() => switchTab('lighting')} onGoWol={() => switchTab('wol')} onGoEnv={() => switchTab('env')} themeTick={themeTick} />}
         {tab === 'lighting' && <Lamp themeTick={themeTick} />}
         {tab === 'wol' && <Wol hostLabel={hostLabel} />}
         {tab === 'presence' && <Presence themeTick={themeTick} />}
+        {tab === 'env' && <Environment themeTick={themeTick} hostLabel={hostLabel} />}
         {tab === 'topology' && <Topology />}
         {tab === 'cost' && <LivingCost themeTick={themeTick} />}
         {tab === 'blueprint' && <Blueprint />}

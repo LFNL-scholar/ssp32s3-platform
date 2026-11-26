@@ -26,6 +26,7 @@ static const char *TAG = "cfg_store";
 #define KEY_WOL      "wol"
 #define KEY_MQTT     "mqtt"
 #define KEY_TUNNEL   "tunnel"
+#define KEY_ENV      "env"
 
 typedef struct {
     cfg_wifi_t wifi;
@@ -37,6 +38,7 @@ typedef struct {
     cfg_wol_t wol;
     cfg_mqtt_t mqtt;
     cfg_tunnel_t tunnel;
+    cfg_env_t env;
 } cfg_cache_t;
 
 static cfg_cache_t s_cache;
@@ -75,6 +77,25 @@ static void mqtt_set_defaults(cfg_mqtt_t *m)
     m->port = 9501;
     strlcpy(m->wol_topic, "pcwake006", sizeof(m->wol_topic));
     strlcpy(m->lamp_topic, "lamp002", sizeof(m->lamp_topic));
+}
+
+static void env_set_defaults(cfg_env_t *e)
+{
+    memset(e, 0, sizeof(*e));
+    e->enabled = true;
+    strlcpy(e->name, "小米温湿度计 3 mini", sizeof(e->name));
+    // A4:C1:38:D0:8B:34 in LE order
+    e->mac[0] = 0x34;
+    e->mac[1] = 0x8B;
+    e->mac[2] = 0xD0;
+    e->mac[3] = 0x38;
+    e->mac[4] = 0xC1;
+    e->mac[5] = 0xA4;
+    e->has_bindkey = false;
+    e->temp_low = 18.0f;
+    e->temp_high = 28.0f;
+    e->hum_low = 35.0f;
+    e->hum_high = 65.0f;
 }
 
 static void generate_siri_token(char out[33])
@@ -155,6 +176,9 @@ esp_err_t cfg_store_init(void)
     }
     if (nvs_read_blob_exact(KEY_TUNNEL, &s_cache.tunnel, sizeof(s_cache.tunnel)) != ESP_OK) {
         memset(&s_cache.tunnel, 0, sizeof(s_cache.tunnel));
+    }
+    if (nvs_read_blob_exact(KEY_ENV, &s_cache.env, sizeof(s_cache.env)) != ESP_OK) {
+        env_set_defaults(&s_cache.env);
     }
 
     xSemaphoreGive(s_mutex);
@@ -723,6 +747,44 @@ esp_err_t cfg_tunnel_set(const cfg_tunnel_t *in)
     return err;
 }
 
+void cfg_env_get(cfg_env_t *out)
+{
+    if (!out) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    *out = s_cache.env;
+    xSemaphoreGive(s_mutex);
+}
+
+esp_err_t cfg_env_set(const cfg_env_t *in)
+{
+    if (!in) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    cfg_env_t next = *in;
+    if (next.name[0] == '\0') {
+        strlcpy(next.name, "小米温湿度计 3 mini", sizeof(next.name));
+    }
+    if (next.temp_low < -20.0f) next.temp_low = -20.0f;
+    if (next.temp_high > 60.0f) next.temp_high = 60.0f;
+    if (next.temp_low >= next.temp_high) {
+        next.temp_high = next.temp_low + 2.0f;
+    }
+    if (next.hum_low < 0.0f) next.hum_low = 0.0f;
+    if (next.hum_high > 100.0f) next.hum_high = 100.0f;
+    if (next.hum_low >= next.hum_high) {
+        next.hum_high = next.hum_low + 5.0f;
+        if (next.hum_high > 100.0f) {
+            next.hum_high = 100.0f;
+            next.hum_low = 95.0f;
+        }
+    }
+    esp_err_t err = nvs_write_blob(KEY_ENV, &next, sizeof(next));
+    if (err == ESP_OK) {
+        s_cache.env = next;
+    }
+    xSemaphoreGive(s_mutex);
+    return err;
+}
+
 esp_err_t cfg_store_factory_reset(void)
 {
     xSemaphoreTake(s_mutex, portMAX_DELAY);
@@ -751,6 +813,7 @@ esp_err_t cfg_store_factory_reset(void)
     settings_set_defaults(&s_cache.settings);
     wol_set_defaults(&s_cache.wol);
     mqtt_set_defaults(&s_cache.mqtt);
+    env_set_defaults(&s_cache.env);
     xSemaphoreGive(s_mutex);
     ESP_LOGW(TAG, "Factory reset complete");
     return ESP_OK;

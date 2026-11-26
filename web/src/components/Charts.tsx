@@ -446,3 +446,217 @@ export function LightingBarChart({ id, items }: { id: string; items: BarItem[]; 
     </div>
   );
 }
+
+export interface EnvChartPoint {
+  epoch: number;
+  val: number;
+}
+
+interface EnvTrendChartProps {
+  id: string;
+  label: string;
+  unit: string;
+  points: EnvChartPoint[];
+  range: '24h' | '7d' | '30d';
+  refLines?: RefLine[];
+  isRed?: boolean;
+  minFloor?: number;
+  maxCeil?: number;
+  themeTick?: string;
+}
+
+function fmtEnvAxisTime(epoch: number, range: '24h' | '7d' | '30d'): string {
+  const d = new Date((epoch + 8 * 3600) * 1000);
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mi = String(d.getUTCMinutes()).padStart(2, '0');
+  return range === '24h' ? `${hh}:${mi}` : `${mm}-${dd}`;
+}
+
+function fmtEnvFullTime(epoch: number): string {
+  const d = new Date((epoch + 8 * 3600) * 1000);
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mi = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${mm}-${dd} ${hh}:${mi}`;
+}
+
+export function EnvTrendChart({
+  id,
+  label,
+  unit,
+  points,
+  range,
+  refLines = [],
+  isRed = false,
+  minFloor,
+  maxCeil,
+}: EnvTrendChartProps) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ w: 540, h: 210 });
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const update = () => {
+      setSize({
+        w: Math.max(300, Math.round(el.clientWidth || 540)),
+        h: Math.max(185, Math.round(el.clientHeight || 210)),
+      });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  if (points.length < 2) {
+    return (
+      <div class="chart-wrap" ref={wrapRef} style={{ display: 'grid', placeItems: 'center', border: '1px dashed var(--line)', borderRadius: 'var(--radius-sm)', background: 'var(--surface-sub)' }}>
+        <div class="dim" style={{ fontSize: '12px', textAlign: 'center', padding: '16px' }}>
+          {points.length === 1 ? '已记录 1 个采样点，等待下一个 5 分钟周期形成趋势曲线' : '暂无足够历史采样点（SNTP 对时且收到传感器读数后每 5 分钟自动记录）'}
+        </div>
+      </div>
+    );
+  }
+
+  const P = chartPalette();
+  const W = size.w;
+  const H = size.h;
+  const padL = 42;
+  const padR = 52;
+  const padT = 14;
+  const padB = 26;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+
+  const vals = points.map((p) => p.val);
+  const refs = refLines.map((r) => r.val);
+  const rawMin = Math.min(...vals, ...(refs.length ? refs : vals));
+  const rawMax = Math.max(...vals, ...(refs.length ? refs : vals));
+  const padSpan = Math.max(2, (rawMax - rawMin) * 0.16);
+  let yMin = Math.floor(rawMin - padSpan);
+  let yMax = Math.ceil(rawMax + padSpan);
+  if (minFloor !== undefined) yMin = Math.max(minFloor, yMin);
+  if (maxCeil !== undefined) yMax = Math.min(maxCeil, yMax);
+  if (yMax <= yMin) yMax = yMin + 4;
+  const span = yMax - yMin;
+
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => Number((yMin + span * f).toFixed(1)));
+  const xOf = (i: number) => padL + (i / Math.max(1, points.length - 1)) * plotW;
+  const yOf = (v: number) => padT + (1 - (Math.max(yMin, Math.min(yMax, v)) - yMin) / span) * plotH;
+
+  const stroke = isRed ? P.red : P.ink;
+  const pts: [number, number][] = points.map((p, i) => [xOf(i), yOf(p.val)]);
+  const pathD = smoothPath(pts);
+  const last = pts[pts.length - 1];
+  const lastVal = points[points.length - 1].val;
+
+  const xMarkIdx = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(f * (points.length - 1)));
+
+  return (
+    <div
+      class="chart-wrap"
+      ref={wrapRef}
+      onMouseMove={(e) => {
+        const rect = wrapRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        const fracX = (e.clientX - rect.left) / rect.width;
+        const idx = Math.round(((Math.max(padL, Math.min(padL + plotW, fracX * W)) - padL) / plotW) * (points.length - 1));
+        setHoverIdx(Math.max(0, Math.min(points.length - 1, idx)));
+      }}
+      onMouseLeave={() => setHoverIdx(null)}
+    >
+      <svg class="chart-svg" viewBox={`0 0 ${W} ${H}`}>
+        <defs>
+          <pattern id={`${id}-hatch-blk`} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <line x1="0" y1="0" x2="0" y2="6" stroke={P.ink} stroke-opacity="0.09" stroke-width="1" />
+          </pattern>
+          <pattern id={`${id}-hatch-red`} width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)">
+            <line x1="0" y1="0" x2="0" y2="7" stroke={P.red} stroke-opacity="0.14" stroke-width="1" />
+          </pattern>
+        </defs>
+
+        <rect x={padL} y={padT} width={plotW} height={plotH} fill={P.bg} stroke={P.frame} stroke-width="1" />
+
+        {yTicks.map((tv) => {
+          const y = yOf(tv);
+          return (
+            <g key={tv}>
+              <line x1={padL} y1={y} x2={padL + plotW} y2={y} stroke={P.gridH} stroke-dasharray="2 3" stroke-width="1" />
+              <line x1={padL - 4} y1={y} x2={padL} y2={y} stroke={P.tick} stroke-width="1" />
+              <text x={padL - 7} y={y + 3.5} text-anchor="end" font-size="10" fill={P.lbl}>
+                {tv.toFixed(0)}
+              </text>
+            </g>
+          );
+        })}
+
+        {xMarkIdx.map((idx, pos) => {
+          const x = xOf(idx);
+          const lbl = pos === xMarkIdx.length - 1 ? fmtEnvAxisTime(points[idx].epoch, '24h') : fmtEnvAxisTime(points[idx].epoch, range);
+          return (
+            <g key={pos}>
+              <line x1={x} y1={padT} x2={x} y2={padT + plotH} stroke={P.gridV} stroke-width="1" />
+              <line x1={x} y1={padT + plotH} x2={x} y2={padT + plotH + 4} stroke={P.tick} stroke-width="1" />
+              <text x={x} y={H - 6} text-anchor="middle" font-size="10" fill={pos === xMarkIdx.length - 1 ? P.ink : P.lbl} font-weight={pos === xMarkIdx.length - 1 ? '600' : '400'}>
+                {lbl}
+              </text>
+            </g>
+          );
+        })}
+
+        {refLines.map((r, idx) => {
+          const y = yOf(r.val);
+          return (
+            <g key={idx}>
+              <line x1={padL} y1={y} x2={padL + plotW} y2={y} stroke={r.color} stroke-dasharray="4 3" stroke-width="1.1" />
+              <rect x={padL + plotW + 4} y={y - 8} width="44" height="16" rx="3" fill={r.bg || P.tagBg} stroke={r.color} stroke-width="1" />
+              <text x={padL + plotW + 26} y={y + 3.5} text-anchor="middle" font-size="9.5" font-weight="600" fill={r.color}>
+                {r.val}{unit}
+              </text>
+            </g>
+          );
+        })}
+
+        <path
+          d={`${pathD} L${last[0].toFixed(1)},${(padT + plotH).toFixed(1)} L${pts[0][0].toFixed(1)},${(padT + plotH).toFixed(1)} Z`}
+          fill={`url(#${id}-${isRed ? 'hatch-red' : 'hatch-blk'})`}
+        />
+        <path d={pathD} fill="none" stroke={stroke} stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+        <circle cx={last[0]} cy={last[1]} r="5" fill={P.dotBg} fill-opacity="0.18" />
+        <circle cx={last[0]} cy={last[1]} r="2.8" fill={P.dotBg} stroke={stroke} stroke-width="2" />
+
+        <g>
+          <rect x={padL + plotW + 4} y={last[1] - 9} width="44" height="18" rx="3" fill={stroke} />
+          <text x={padL + plotW + 26} y={last[1] + 3.5} text-anchor="middle" font-size="10" font-weight="600" fill={isRed ? '#ffffff' : P.dotBg}>
+            {lastVal.toFixed(1)}
+          </text>
+        </g>
+
+        {hoverIdx !== null && (
+          <g>
+            <line x1={xOf(hoverIdx)} y1={padT} x2={xOf(hoverIdx)} y2={padT + plotH} stroke={P.ink} stroke-dasharray="3 2" stroke-width="1" />
+            <circle cx={xOf(hoverIdx)} cy={yOf(points[hoverIdx].val)} r="4" fill={P.dotBg} stroke={stroke} stroke-width="2" />
+          </g>
+        )}
+      </svg>
+
+      {hoverIdx !== null && points[hoverIdx] && (
+        <div
+          class="chart-tip show"
+          style={{ left: `${Math.max(70, Math.min(W - 70, xOf(hoverIdx)))}px` }}
+        >
+          <div class="chart-tip-time">{fmtEnvFullTime(points[hoverIdx].epoch)}</div>
+          <div class="chart-tip-row">
+            <span style={{ opacity: 0.75 }}>{label}</span>
+            <strong class="num">{points[hoverIdx].val.toFixed(1)}{unit}</strong>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

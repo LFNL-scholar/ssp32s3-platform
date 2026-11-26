@@ -19,6 +19,7 @@
 #include "wol_mgr.h"
 #include "mqtt_bridge.h"
 #include "cloud_tunnel.h"
+#include "env_sensor.h"
 
 static const char *TAG = "app_main";
 
@@ -96,6 +97,11 @@ void app_main(void)
 
     ble_presence_set_ws_cb(web_server_ws_broadcast);
     ble_presence_set_home_count_cb(on_presence_home_count_change);
+    ble_presence_set_adv_cb(env_sensor_on_ble_adv);
+
+    env_sensor_set_ws_cb(web_server_ws_broadcast);
+    ESP_ERROR_CHECK(env_sensor_init(data_mounted));
+
     ESP_ERROR_CHECK(web_server_start());
     ESP_ERROR_CHECK(ble_presence_init());
 

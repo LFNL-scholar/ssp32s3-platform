@@ -27,6 +27,7 @@
 #include "wol_mgr.h"
 #include "mqtt_bridge.h"
 #include "cloud_tunnel.h"
+#include "env_sensor.h"
 
 static const char *TAG = "web_server";
 
@@ -1504,6 +1505,145 @@ static esp_err_t handle_living_cost_put(httpd_req_t *req)
     return send_json(req, "200 OK", o);
 }
 
+// ---------- Environment Sensor (Xiaomi BLE MiBeacon) Handlers ----------
+
+static void attach_env_siri_info(cJSON *o)
+{
+    if (!o) return;
+    cfg_siri_t siri;
+    cfg_siri_get(&siri);
+    cJSON *so = cJSON_CreateObject();
+    cJSON_AddBoolToObject(so, "enabled", siri.enabled);
+    cJSON_AddStringToObject(so, "token", siri.token);
+    cJSON_AddItemToObject(o, "siri", so);
+}
+
+static bool parse_hex_bindkey(const char *str, uint8_t out[16])
+{
+    if (!str) return false;
+    char clean[33];
+    size_t n = 0;
+    for (const char *p = str; *p; p++) {
+        if (*p == ' ' || *p == '\t' || *p == '-' || *p == ':') continue;
+        if (n >= 32) return false;
+        char c = *p;
+        bool is_hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        if (!is_hex) return false;
+        clean[n++] = c;
+    }
+    if (n != 32) return false;
+    clean[32] = '\0';
+    for (int i = 0; i < 16; i++) {
+        unsigned int byte = 0;
+        if (sscanf(&clean[i * 2], "%2x", &byte) != 1) return false;
+        out[i] = (uint8_t)byte;
+    }
+    return true;
+}
+
+static esp_err_t handle_env_state(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *o = env_sensor_build_state_json();
+    attach_env_siri_info(o);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_env_config(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *body = read_json_body(req, 768);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    cfg_env_t cfg;
+    cfg_env_get(&cfg);
+
+    const cJSON *v;
+    if (cJSON_IsBool((v = cJSON_GetObjectItem(body, "enabled")))) {
+        cfg.enabled = cJSON_IsTrue(v);
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "name"))) && v->valuestring[0]) {
+        strlcpy(cfg.name, v->valuestring, sizeof(cfg.name));
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "mac"))) && v->valuestring[0]) {
+        uint8_t mac_le[6];
+        if (!parse_mac_str(v->valuestring, mac_le)) {
+            cJSON_Delete(body);
+            return send_err(req, "400 Bad Request", "蓝牙 MAC 地址格式无效（需 AA:BB:CC:DD:EE:FF）");
+        }
+        memcpy(cfg.mac, mac_le, 6);
+    }
+    if (cJSON_IsBool((v = cJSON_GetObjectItem(body, "clear_bindkey"))) && cJSON_IsTrue(v)) {
+        cfg.has_bindkey = false;
+        memset(cfg.bindkey, 0, sizeof(cfg.bindkey));
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "bindkey"))) && v->valuestring[0]) {
+        uint8_t key[16];
+        if (!parse_hex_bindkey(v->valuestring, key)) {
+            cJSON_Delete(body);
+            return send_err(req, "400 Bad Request", "Bindkey 格式无效（需 32 位十六进制字符）");
+        }
+        memcpy(cfg.bindkey, key, 16);
+        cfg.has_bindkey = true;
+    }
+    if (cJSON_IsNumber((v = cJSON_GetObjectItem(body, "temp_low")))) {
+        cfg.temp_low = (float)v->valuedouble;
+    }
+    if (cJSON_IsNumber((v = cJSON_GetObjectItem(body, "temp_high")))) {
+        cfg.temp_high = (float)v->valuedouble;
+    }
+    if (cJSON_IsNumber((v = cJSON_GetObjectItem(body, "hum_low")))) {
+        cfg.hum_low = (float)v->valuedouble;
+    }
+    if (cJSON_IsNumber((v = cJSON_GetObjectItem(body, "hum_high")))) {
+        cfg.hum_high = (float)v->valuedouble;
+    }
+    cJSON_Delete(body);
+
+    esp_err_t err = cfg_env_set(&cfg);
+    if (err != ESP_OK) return send_err(req, "500 Internal Server Error", "保存环境传感器配置失败");
+
+    env_sensor_reload_config();
+    cJSON *o = env_sensor_build_state_json();
+    attach_env_siri_info(o);
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_env_history_get(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    char qbuf[64] = {0};
+    char range[16] = "24h";
+    if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
+        httpd_query_key_value(qbuf, "range", range, sizeof(range));
+    }
+    return send_json(req, "200 OK", env_sensor_build_history_json(range));
+}
+
+static esp_err_t handle_env_history_delete(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    esp_err_t err = env_sensor_clear_history();
+    if (err != ESP_OK) return send_err(req, "500 Internal Server Error", "清空环境历史失败");
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, "200 OK", o);
+}
+
+static esp_err_t handle_env_siri(httpd_req_t *req)
+{
+    char qbuf[192] = {0};
+    httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf));
+
+    char token[64] = {0};
+    if (!extract_siri_token(req, qbuf, token, sizeof(token)) || !cfg_siri_verify_token(token)) {
+        return send_err(req, "401 Unauthorized", "Siri 快捷指令未启用或密钥无效");
+    }
+
+    return send_json(req, "200 OK", env_sensor_build_siri_json());
+}
+
 // ---------- WebSocket Handler ----------
 
 #ifdef CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
@@ -1735,7 +1875,7 @@ esp_err_t web_server_start(void)
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port = 80;
-    cfg.max_uri_handlers = 64;
+    cfg.max_uri_handlers = 80;
     cfg.max_open_sockets = 10;
     cfg.lru_purge_enable = true;
     cfg.uri_match_fn = httpd_uri_match_wildcard;
@@ -1804,6 +1944,12 @@ esp_err_t web_server_start(void)
         { .uri = "/api/siri/wol/status",       .method = HTTP_GET,    .handler = handle_siri_wol_status },
         { .uri = "/api/living-cost",           .method = HTTP_GET,    .handler = handle_living_cost_get },
         { .uri = "/api/living-cost",           .method = HTTP_PUT,    .handler = handle_living_cost_put },
+        { .uri = "/api/env/state",             .method = HTTP_GET,    .handler = handle_env_state },
+        { .uri = "/api/env/config",            .method = HTTP_PUT,    .handler = handle_env_config },
+        { .uri = "/api/env/history",           .method = HTTP_GET,    .handler = handle_env_history_get },
+        { .uri = "/api/env/history",           .method = HTTP_DELETE, .handler = handle_env_history_delete },
+        { .uri = "/api/env/siri",              .method = HTTP_GET,    .handler = handle_env_siri },
+        { .uri = "/api/env/siri",              .method = HTTP_POST,   .handler = handle_env_siri },
     };
 
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
