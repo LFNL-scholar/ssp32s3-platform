@@ -1644,6 +1644,83 @@ static esp_err_t handle_env_siri(httpd_req_t *req)
     return send_json(req, "200 OK", env_sensor_build_siri_json());
 }
 
+// ---------- K230 Camera LAN Config Handlers ----------
+
+static cJSON *build_cam_status_json(const cfg_cam_t *c)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddStringToObject(o, "via", "lan");
+    cJSON_AddBoolToObject(o, "online", c->lan_url[0] != '\0');
+    cJSON_AddBoolToObject(o, "streaming", !c->privacy && c->lan_url[0] != '\0');
+    cJSON_AddBoolToObject(o, "privacy", c->privacy);
+    cJSON_AddBoolToObject(o, "away_only", c->away_only);
+    cJSON_AddBoolToObject(o, "home_blocked", false);
+    cJSON_AddNumberToObject(o, "viewers", 1);
+    cJSON_AddStringToObject(o, "lan_ip", "");
+    cJSON_AddStringToObject(o, "lan_url", c->lan_url);
+    cJSON_AddStringToObject(o, "res", c->res);
+    cJSON_AddNumberToObject(o, "fps", c->fps);
+    cJSON_AddNumberToObject(o, "quality", c->quality);
+    cJSON_AddNumberToObject(o, "frame_bytes", 0);
+    cJSON_AddNumberToObject(o, "actual_fps", 0);
+    cJSON_AddNumberToObject(o, "last_frame_ago_s", -1);
+    return o;
+}
+
+static esp_err_t handle_cam_status(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cfg_cam_t cfg;
+    cfg_cam_get(&cfg);
+    return send_json(req, "200 OK", build_cam_status_json(&cfg));
+}
+
+static esp_err_t handle_cam_config(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    cJSON *body = read_json_body(req, 512);
+    if (!body) return send_err(req, "400 Bad Request", "请求体无效");
+
+    cfg_cam_t cfg;
+    cfg_cam_get(&cfg);
+
+    const cJSON *v;
+    if (cJSON_IsBool((v = cJSON_GetObjectItem(body, "privacy")))) {
+        cfg.privacy = cJSON_IsTrue(v);
+    }
+    if (cJSON_IsBool((v = cJSON_GetObjectItem(body, "away_only")))) {
+        cfg.away_only = cJSON_IsTrue(v);
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "lan_url")))) {
+        strlcpy(cfg.lan_url, v->valuestring, sizeof(cfg.lan_url));
+    }
+    if (cJSON_IsString((v = cJSON_GetObjectItem(body, "res")))) {
+        if (strcmp(v->valuestring, "640x368") == 0 ||
+            strcmp(v->valuestring, "1280x720") == 0 ||
+            strcmp(v->valuestring, "1920x1080") == 0) {
+            strlcpy(cfg.res, v->valuestring, sizeof(cfg.res));
+        }
+    }
+    if (cJSON_IsNumber((v = cJSON_GetObjectItem(body, "fps")))) {
+        int f = (int)v->valuedouble;
+        if (f < 1) f = 1;
+        if (f > 30) f = 30;
+        cfg.fps = (uint8_t)f;
+    }
+    if (cJSON_IsNumber((v = cJSON_GetObjectItem(body, "quality")))) {
+        int q = (int)v->valuedouble;
+        if (q < 30) q = 30;
+        if (q > 95) q = 95;
+        cfg.quality = (uint8_t)q;
+    }
+    cJSON_Delete(body);
+
+    esp_err_t err = cfg_cam_set(&cfg);
+    if (err != ESP_OK) return send_err(req, "500 Internal Server Error", "保存摄像头配置失败");
+    return send_json(req, "200 OK", build_cam_status_json(&cfg));
+}
+
 // ---------- WebSocket Handler ----------
 
 #ifdef CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
@@ -1950,6 +2027,8 @@ esp_err_t web_server_start(void)
         { .uri = "/api/env/history",           .method = HTTP_DELETE, .handler = handle_env_history_delete },
         { .uri = "/api/env/siri",              .method = HTTP_GET,    .handler = handle_env_siri },
         { .uri = "/api/env/siri",              .method = HTTP_POST,   .handler = handle_env_siri },
+        { .uri = "/api/cam/status",            .method = HTTP_GET,    .handler = handle_cam_status },
+        { .uri = "/api/cam/config",            .method = HTTP_PUT,    .handler = handle_cam_config },
     };
 
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {

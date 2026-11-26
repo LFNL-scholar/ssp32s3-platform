@@ -7,13 +7,14 @@ import { Lamp } from './pages/Lamp';
 import { Wol } from './pages/Wol';
 import { Presence } from './pages/Presence';
 import { Environment } from './pages/Environment';
+import { Camera } from './pages/Camera';
 import { Topology } from './pages/Topology';
 import { LivingCost } from './pages/LivingCost';
 import { Blueprint } from './pages/Blueprint';
 import { Hardware } from './pages/Hardware';
 import { applyThemeMode, getSavedThemeMode, resolveTheme, ThemeMode } from './utils/theme';
 
-type Tab = 'overview' | 'lighting' | 'wol' | 'presence' | 'env' | 'topology' | 'cost' | 'blueprint' | 'hardware';
+type Tab = 'overview' | 'lighting' | 'wol' | 'presence' | 'env' | 'camera' | 'topology' | 'cost' | 'blueprint' | 'hardware';
 
 export function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
@@ -109,6 +110,10 @@ export function App() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z" /></svg>
             <span>环境监测</span>
           </button>
+          <button class={`nav-item ${tab === 'camera' ? 'active' : ''}`} onClick={() => switchTab('camera')}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M23 7l-7 5 7 5V7z" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>
+            <span>视觉监控</span>
+          </button>
           <button class={`nav-item ${tab === 'topology' ? 'active' : ''}`} onClick={() => switchTab('topology')}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" /><line x1="9" y1="3" x2="9" y2="18" /><line x1="15" y1="6" x2="15" y2="21" /></svg>
             <span>空间拓扑</span>
@@ -165,6 +170,7 @@ export function App() {
         {tab === 'wol' && <Wol hostLabel={hostLabel} />}
         {tab === 'presence' && <Presence themeTick={themeTick} />}
         {tab === 'env' && <Environment themeTick={themeTick} hostLabel={hostLabel} />}
+        {tab === 'camera' && <Camera />}
         {tab === 'topology' && <Topology />}
         {tab === 'cost' && <LivingCost themeTick={themeTick} />}
         {tab === 'blueprint' && <Blueprint />}

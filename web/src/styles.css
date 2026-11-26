@@ -621,3 +621,105 @@ html {
   display: inline-grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 2px;
   background: var(--surface-sub); border: 1px solid var(--line); border-radius: var(--radius-sm);
 }
+
+.cam-stage {
+  position: relative; width: 100%; aspect-ratio: 16 / 9; max-height: 520px; min-height: 360px;
+  background-color: #09090b;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.038) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.038) 1px, transparent 1px);
+  background-size: 24px 24px;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  overflow: hidden; display: flex; align-items: center; justify-content: center;
+}
+.cam-media {
+  width: 100%; height: 100%; object-fit: contain; display: block;
+  position: relative; z-index: 1; background: transparent;
+}
+.cam-stage.fill-mode .cam-media { object-fit: cover; }
+.cam-side-rail {
+  position: absolute; top: 56px; bottom: 56px; width: 14px; z-index: 2; pointer-events: none;
+  opacity: 0.45;
+}
+.cam-side-rail.left {
+  left: 10px;
+  background-image: repeating-linear-gradient(to bottom, rgba(255, 255, 255, 0.22) 0 1px, transparent 1px 16px);
+  border-left: 1px solid rgba(255, 255, 255, 0.14);
+}
+.cam-side-rail.right {
+  right: 10px;
+  background-image: repeating-linear-gradient(to bottom, rgba(255, 255, 255, 0.22) 0 1px, transparent 1px 16px);
+  border-right: 1px solid rgba(255, 255, 255, 0.14);
+}
+.cam-hud-layer {
+  position: absolute; inset: 0; z-index: 4; pointer-events: none; transition: opacity 0.18s;
+}
+.cam-hud-layer.hidden { opacity: 0; }
+.cam-hud {
+  position: absolute; padding: 8px 11px; min-width: 168px;
+  background: rgba(9, 9, 11, 0.74);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.14); border-radius: var(--radius-sm);
+  color: #fafafa;
+}
+.cam-hud::before {
+  content: ""; position: absolute; top: 4px; left: 4px; width: 6px; height: 6px;
+  border-top: 1.5px solid rgba(255, 255, 255, 0.38);
+  border-left: 1.5px solid rgba(255, 255, 255, 0.38);
+}
+.cam-hud-tl { top: 12px; left: 14px; }
+.cam-hud-tl::before { border-top-color: var(--red); border-left-color: var(--red); }
+.cam-hud-tr { top: 12px; right: 14px; text-align: right; }
+.cam-hud-bl { bottom: 12px; left: 14px; }
+.cam-hud-br { bottom: 12px; right: 14px; text-align: right; }
+.cam-hud-eyebrow {
+  font-size: 9.5px; font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: #a1a1aa; margin-bottom: 2px;
+}
+.cam-hud-row {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+}
+.cam-hud-tr .cam-hud-row, .cam-hud-br .cam-hud-row { justify-content: flex-end; }
+.cam-hud-main { font-size: 13px; font-weight: 600; color: #fafafa; line-height: 1.3; }
+.cam-hud-clock { font-size: 18px; font-weight: 700; color: #fafafa; line-height: 1.15; letter-spacing: 0.02em; }
+.cam-hud-sub { font-size: 11px; color: #a1a1aa; margin-top: 2px; line-height: 1.3; }
+.cam-hud-badge {
+  display: inline-flex; align-items: center; font-size: 10px; font-weight: 600;
+  padding: 1px 6px; border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.08); color: #fafafa;
+}
+.cam-hud-badge.red {
+  border-color: rgba(255, 31, 51, 0.5);
+  background: rgba(255, 31, 51, 0.16); color: #ff4d5e;
+}
+.cam-hud-bar {
+  width: 100%; height: 2px; background: rgba(255, 255, 255, 0.14);
+  border-radius: 1px; margin-top: 6px; overflow: hidden;
+}
+.cam-hud-bar > i { display: block; height: 100%; background: #fafafa; }
+@media (max-width: 720px) {
+  .cam-stage { min-height: 240px; }
+  .cam-hud { padding: 5px 8px; min-width: 0; max-width: 46%; }
+  .cam-hud-tl { top: 8px; left: 8px; }
+  .cam-hud-tr { top: 8px; right: 8px; }
+  .cam-hud-bl { bottom: 8px; left: 8px; }
+  .cam-hud-br { bottom: 8px; right: 8px; }
+  .cam-hud-clock { font-size: 14px; }
+  .cam-hud-main { font-size: 11.5px; }
+  .cam-hud-sub, .cam-hud-eyebrow { font-size: 9.5px; }
+  .cam-side-rail { display: none; }
+}
+.cam-curtain {
+  position: absolute; inset: 0; z-index: 5;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  padding: 24px; text-align: center;
+  background: rgba(9, 9, 11, 0.92);
+  background-image: linear-gradient(rgba(255, 255, 255, 0.032) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.032) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+.cam-curtain-code {
+  font-size: 12px; font-weight: 700; letter-spacing: 0.14em; color: var(--red);
+  padding: 3px 10px; border: 1px solid var(--red-line); background: var(--red-soft); border-radius: var(--radius-sm);
+}
+.cam-curtain-desc { font-size: 12.5px; color: var(--text-sec); max-width: 460px; }

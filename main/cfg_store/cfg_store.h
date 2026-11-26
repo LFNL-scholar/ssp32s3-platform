@@ -105,6 +105,15 @@ typedef struct {
     float hum_high;
 } cfg_env_t;
 
+typedef struct {
+    bool privacy;
+    bool away_only;
+    char lan_url[96];
+    uint8_t fps;
+    uint8_t quality;
+    char res[16];
+} cfg_cam_t;
+
 esp_err_t cfg_store_init(void);
 
 // SoftAP deterministic SSID & password
@@ -159,6 +168,10 @@ esp_err_t cfg_tunnel_set(const cfg_tunnel_t *in);
 // Environment sensor (Xiaomi BLE MiBeacon) config
 void cfg_env_get(cfg_env_t *out);
 esp_err_t cfg_env_set(const cfg_env_t *in);
+
+// K230 edge camera LAN preferences
+void cfg_cam_get(cfg_cam_t *out);
+esp_err_t cfg_cam_set(const cfg_cam_t *in);
 
 // Factory reset (clears ssp_cfg + nimble_bond)
 esp_err_t cfg_store_factory_reset(void);

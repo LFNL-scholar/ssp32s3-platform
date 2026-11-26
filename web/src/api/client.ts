@@ -306,6 +306,25 @@ export interface EnvHistoryResp {
   points: [number, number, number][];
 }
 
+export interface CamStatus {
+  ok: boolean;
+  via: 'cloud' | 'lan';
+  online: boolean;
+  streaming: boolean;
+  privacy: boolean;
+  away_only: boolean;
+  home_blocked: boolean;
+  viewers: number;
+  lan_ip: string;
+  lan_url: string;
+  res: '640x368' | '1280x720' | '1920x1080';
+  fps: number;
+  quality: number;
+  frame_bytes: number;
+  actual_fps: number;
+  last_frame_ago_s: number;
+}
+
 export type WsMessage =
   | TelemetryMsg
   | { type: 'presence_tick'; persons: PersonState[] }
@@ -427,6 +446,16 @@ export const api = {
   }) => req<EnvState & { ok: boolean }>('/api/env/config', { method: 'PUT', body: JSON.stringify(body) }),
   envHistory: (range: '24h' | '7d' | '30d') => req<EnvHistoryResp>(`/api/env/history?range=${range}`),
   envClearHistory: () => req<{ ok: boolean }>('/api/env/history', { method: 'DELETE' }),
+
+  camStatus: () => req<CamStatus>('/api/cam/status'),
+  camConfig: (body: {
+    privacy?: boolean;
+    away_only?: boolean;
+    lan_url?: string;
+    res?: '640x368' | '1280x720' | '1920x1080';
+    fps?: number;
+    quality?: number;
+  }) => req<CamStatus>('/api/cam/config', { method: 'PUT', body: JSON.stringify(body) }),
 };
 
 type Listener = (msg: WsMessage) => void;

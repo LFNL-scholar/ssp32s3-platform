@@ -13,3 +13,4 @@ data_seed/
 __pycache__/
 *.pyc
 .DS_Store
+k230-cam/config.py

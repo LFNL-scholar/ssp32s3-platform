@@ -27,6 +27,7 @@ static const char *TAG = "cfg_store";
 #define KEY_MQTT     "mqtt"
 #define KEY_TUNNEL   "tunnel"
 #define KEY_ENV      "env"
+#define KEY_CAM      "cam"
 
 typedef struct {
     cfg_wifi_t wifi;
@@ -39,6 +40,7 @@ typedef struct {
     cfg_mqtt_t mqtt;
     cfg_tunnel_t tunnel;
     cfg_env_t env;
+    cfg_cam_t cam;
 } cfg_cache_t;
 
 static cfg_cache_t s_cache;
@@ -96,6 +98,17 @@ static void env_set_defaults(cfg_env_t *e)
     e->temp_high = 28.0f;
     e->hum_low = 35.0f;
     e->hum_high = 65.0f;
+}
+
+static void cam_set_defaults(cfg_cam_t *c)
+{
+    memset(c, 0, sizeof(*c));
+    c->privacy = false;
+    c->away_only = false;
+    strlcpy(c->lan_url, "http://192.168.0.108:8080", sizeof(c->lan_url));
+    c->fps = 20;
+    c->quality = 75;
+    strlcpy(c->res, "1280x720", sizeof(c->res));
 }
 
 static void generate_siri_token(char out[33])
@@ -179,6 +192,9 @@ esp_err_t cfg_store_init(void)
     }
     if (nvs_read_blob_exact(KEY_ENV, &s_cache.env, sizeof(s_cache.env)) != ESP_OK) {
         env_set_defaults(&s_cache.env);
+    }
+    if (nvs_read_blob_exact(KEY_CAM, &s_cache.cam, sizeof(s_cache.cam)) != ESP_OK) {
+        cam_set_defaults(&s_cache.cam);
     }
 
     xSemaphoreGive(s_mutex);
@@ -785,6 +801,32 @@ esp_err_t cfg_env_set(const cfg_env_t *in)
     return err;
 }
 
+void cfg_cam_get(cfg_cam_t *out)
+{
+    if (!out) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    *out = s_cache.cam;
+    xSemaphoreGive(s_mutex);
+}
+
+esp_err_t cfg_cam_set(const cfg_cam_t *in)
+{
+    if (!in) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    cfg_cam_t next = *in;
+    if (next.fps < 1) next.fps = 1;
+    if (next.fps > 30) next.fps = 30;
+    if (next.quality < 30) next.quality = 30;
+    if (next.quality > 95) next.quality = 95;
+    if (next.res[0] == '\0') strlcpy(next.res, "1280x720", sizeof(next.res));
+    esp_err_t err = nvs_write_blob(KEY_CAM, &next, sizeof(next));
+    if (err == ESP_OK) {
+        s_cache.cam = next;
+    }
+    xSemaphoreGive(s_mutex);
+    return err;
+}
+
 esp_err_t cfg_store_factory_reset(void)
 {
     xSemaphoreTake(s_mutex, portMAX_DELAY);
@@ -814,6 +856,7 @@ esp_err_t cfg_store_factory_reset(void)
     wol_set_defaults(&s_cache.wol);
     mqtt_set_defaults(&s_cache.mqtt);
     env_set_defaults(&s_cache.env);
+    cam_set_defaults(&s_cache.cam);
     xSemaphoreGive(s_mutex);
     ESP_LOGW(TAG, "Factory reset complete");
     return ESP_OK;
