@@ -25,7 +25,7 @@ static const char *TAG = "cloud_tunnel";
 
 #define TUNNEL_MAX_REQ_JSON   20480
 #define TUNNEL_MAX_HTTP_RESP  65536
-#define TUNNEL_QUEUE_LEN      8
+#define TUNNEL_QUEUE_LEN      24
 
 static SemaphoreHandle_t s_state_mutex = NULL;
 static SemaphoreHandle_t s_send_mutex = NULL;
@@ -178,10 +178,46 @@ static void handle_http_req_json(const char *json_str)
 
             if (sent_ok) {
                 size_t total = 0;
+                char *hdr_end = NULL;
+                long content_len = -1;
+                bool is_chunked = false;
+
                 while (total < raw_cap) {
                     int n = recv(sock, raw_resp + total, raw_cap - total, 0);
                     if (n <= 0) break;
                     total += (size_t)n;
+                    raw_resp[total] = '\0';
+
+                    if (!hdr_end) {
+                        hdr_end = strstr(raw_resp, "\r\n\r\n");
+                        if (hdr_end) {
+                            *hdr_end = '\0';
+                            char cl_str[32];
+                            if (find_header_value(raw_resp, "Content-Length", cl_str, sizeof(cl_str))[0]) {
+                                content_len = strtol(cl_str, NULL, 10);
+                            }
+                            char te_str[32];
+                            if (find_header_value(raw_resp, "Transfer-Encoding", te_str, sizeof(te_str))[0] &&
+                                strcasestr(te_str, "chunked") != NULL) {
+                                is_chunked = true;
+                            }
+                            *hdr_end = '\r';
+                        }
+                    }
+
+                    if (hdr_end) {
+                        char *bptr = hdr_end + 4;
+                        size_t blen = total - (size_t)(bptr - raw_resp);
+                        if (content_len >= 0 && (long)blen >= content_len) {
+                            break;
+                        }
+                        if (is_chunked) {
+                            if ((blen >= 5 && memcmp(bptr, "0\r\n\r\n", 5) == 0) ||
+                                (blen >= 7 && strstr(bptr, "\r\n0\r\n\r\n") != NULL)) {
+                                break;
+                            }
+                        }
+                    }
                 }
                 raw_resp[total] = '\0';
 
